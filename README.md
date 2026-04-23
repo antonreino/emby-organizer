@@ -1,6 +1,6 @@
 # 🎬 Emby Organizer
 
-![Emby Organizer Banner](https://via.placeholder.com/1200x300?text=Emby+Organizer)
+![Emby Organizer Banner](https://github.com/antonreino/emby-organizer)
 
 ## 📌 Descripción
 
