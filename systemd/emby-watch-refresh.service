@@ -1,0 +1,12 @@
+[Unit]
+Description=Watcher de Emby (auto refresh biblioteca)
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/emby-watch-refresh.sh
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

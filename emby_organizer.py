@@ -36,7 +36,7 @@ TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 TMDB_CACHE_FILE = STATE_DIR / "tmdb_cache.json"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "398639807")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts"}
 IGNORE_EXTENSIONS = {".part", ".tmp", ".crdownload", ".!qB", ".aria2"}
@@ -259,6 +259,7 @@ class SftpUploader:
     def build_remote_path(self, media: MediaInfo) -> str:
         target = self.targets[media.category]
         safe_title = self.safe_component(media.title)
+        safe_title = re.sub(r"\s+", " ", safe_title).strip()
 
         # Series normales o anime episódico.
         if media.category in {"series", "anime"} and media.episode is not None:
@@ -266,10 +267,10 @@ class SftpUploader:
             filename = f"S{season:02d}E{media.episode:02d}{media.extension}"
             return f"{target.path}/{safe_title}/Season {season}/{filename}"
 
-        # Películas, incluyendo películas de anime.
-        folder_name = safe_title if media.year is None else f"{safe_title} ({media.year})"
-        filename = f"{folder_name}{media.extension}"
-        return f"{target.path}/{folder_name}/{filename}"
+        # Películas SIN carpeta (estructura plana)
+        filename = safe_title if media.year is None else f"{safe_title} ({media.year})"
+        filename = f"{filename}{media.extension}"
+        return f"{target.path}/{filename}"
 
 
 class MediaOrganizer:

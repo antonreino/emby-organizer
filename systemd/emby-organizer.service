@@ -1,0 +1,14 @@
+[Unit]
+Description=Emby Organizer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/tone/Documentos/Agentes/emby-organizer
+ExecStart=/usr/bin/python3 /home/tone/Documentos/Agentes/emby-organizer/emby_organizer.py --daemon
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
