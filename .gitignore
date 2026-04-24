@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.log
+.env
+.env.*
+*.bak
+*.torrent
+*.mkv
+*.mp4
+*.avi
+*.mov
+*.ts
+NoClasificado/
+.cache/
+tmp/
+.vscode/
+.idea/
