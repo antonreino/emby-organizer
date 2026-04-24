@@ -35,6 +35,9 @@ QUARANTINE_LOCAL_DIR = INBOX_DIR / "NoClasificado"
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 TMDB_CACHE_FILE = STATE_DIR / "tmdb_cache.json"
 
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "398639807")
+
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts"}
 IGNORE_EXTENSIONS = {".part", ".tmp", ".crdownload", ".!qB", ".aria2"}
 IGNORE_FILENAMES = {"canal telegram oficial.url"}
@@ -679,6 +682,45 @@ class MediaOrganizer:
                 shutil.rmtree(folder, ignore_errors=True)
                 logging.info("Carpeta sin vídeos eliminada: %s", folder)
 
+    def notify_telegram(self, media: MediaInfo, remote_path: str):
+        if not TELEGRAM_BOT_TOKEN:
+            logging.info("Telegram no configurado: falta TELEGRAM_BOT_TOKEN")
+            return
+
+        category_names = {
+            "anime": "Anime",
+            "series": "Series",
+            "movies": "Películas",
+        }
+
+        category = category_names.get(media.category, media.category)
+
+        if media.episode is not None:
+            detail = f"{media.title} - S{media.season or 1:02d}E{media.episode:02d}"
+        else:
+            detail = media.title if media.year is None else f"{media.title} ({media.year})"
+
+        text = (
+            "✅ Contenido añadido a Emby\n"
+            f"📚 Biblioteca: {category}\n"
+            f"🎬 Título: {detail}\n"
+            f"📁 Ruta: {remote_path}"
+        )
+
+        try:
+            response = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                data={
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "text": text,
+                },
+                timeout=8,
+            )
+            response.raise_for_status()
+            logging.info("Notificación Telegram enviada")
+        except Exception:
+            logging.exception("Error enviando notificación Telegram")
+
     def process_file(self, path: Path):
         if self.should_ignore(path):
             logging.debug("Ignorado: %s", path)
@@ -708,6 +750,9 @@ class MediaOrganizer:
         self.uploader.upload_file(path, media.category, remote_path)
         path.unlink()
         logging.info("Subido y eliminado localmente: %s", path)
+
+        self.notify_telegram(media, remote_path)
+
         self.cleanup_download_folder(path)
 
     def scan_once(self):
