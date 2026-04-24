@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import getpass
+import json
 import logging
 import os
 import re
@@ -12,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import urlparse
+
+import requests
 
 try:
     import paramiko
@@ -29,6 +32,9 @@ LOG_FILE = Path.home() / ".local" / "share" / "emby_organizer" / "organizer.log"
 STATE_DIR = Path.home() / ".local" / "share" / "emby_organizer"
 QUARANTINE_LOCAL_DIR = INBOX_DIR / "NoClasificado"
 
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
+TMDB_CACHE_FILE = STATE_DIR / "tmdb_cache.json"
+
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts"}
 IGNORE_EXTENSIONS = {".part", ".tmp", ".crdownload", ".!qB", ".aria2"}
 IGNORE_FILENAMES = {"canal telegram oficial.url"}
@@ -40,7 +46,6 @@ LIBRARIES = {
     "movies": "sftp://tonecas@192.168.1.177:2222/media/Peliculas/Biblioteca/Peliculas",
 }
 
-# Solo pistas realmente anime
 ANIME_HINTS = {
     "anime",
     "ova",
@@ -49,6 +54,8 @@ ANIME_HINTS = {
     "sub esp",
     "subspa",
     "japanese",
+    "japones",
+    "japonés",
 }
 
 SERIES_EPISODE_PATTERNS = [
@@ -64,7 +71,7 @@ SPANISH_EPISODE_PATTERNS = [
 ]
 
 QUALITY_TOKENS = re.compile(
-    r"(?i)\b(2160p|1080p|720p|480p|x264|x265|h\.264|h\.265|hevc|bluray|bdrip|webrip|web-dl|hdrip|dvdrip|aac|dts|10bit|8bit|multi|multi-audio|dual audio|subbed|proper|repack|hdtv)\b"
+    r"(?i)\b(2160p|1080p|720p|480p|x264|x265|h\.264|h\.265|hevc|bluray|bdrip|webrip|web-dl|hdrip|dvdrip|aac|dts|10bit|8bit|multi|multi-audio|dual audio|subbed|proper|repack|hdtv|microhd)\b"
 )
 YEAR_PATTERN = re.compile(r"\b(19\d{2}|20\d{2})\b")
 
@@ -117,6 +124,13 @@ class SftpUploader:
             port=parsed.port or 22,
             path=parsed.path,
         )
+
+    @staticmethod
+    def safe_component(value: str) -> str:
+        value = value.strip()
+        value = value.replace("/", "-").replace("\\", "-")
+        value = re.sub(r"\s+", " ", value)
+        return value.strip(" .-_") or "Unknown"
 
     def _connect(self, category: str):
         target = self.targets[category]
@@ -241,13 +255,16 @@ class SftpUploader:
 
     def build_remote_path(self, media: MediaInfo) -> str:
         target = self.targets[media.category]
+        safe_title = self.safe_component(media.title)
 
-        if media.category in {"series", "anime"}:
+        # Series normales o anime episódico.
+        if media.category in {"series", "anime"} and media.episode is not None:
             season = media.season or 1
             filename = f"S{season:02d}E{media.episode:02d}{media.extension}"
-            return f"{target.path}/{media.title}/Season {season}/{filename}"
+            return f"{target.path}/{safe_title}/Season {season}/{filename}"
 
-        folder_name = media.title if media.year is None else f"{media.title} ({media.year})"
+        # Películas, incluyendo películas de anime.
+        folder_name = safe_title if media.year is None else f"{safe_title} ({media.year})"
         filename = f"{folder_name}{media.extension}"
         return f"{target.path}/{folder_name}/{filename}"
 
@@ -299,8 +316,34 @@ class MediaOrganizer:
         name = re.sub(r"(?i)\bCap[íi]?tulo[ ._-]?\d{1,4}\b", "", name)
         name = re.sub(r"(?i)\bCap[ ._-]?\d{1,4}\b", "", name)
         name = QUALITY_TOKENS.sub("", name)
+        name = re.sub(r"(?i)www\..*$", "", name)
+        name = re.sub(r"(?i)newpct\d*.*$", "", name)
         name = re.sub(r"\[\s*\]", "", name)
         name = re.sub(r"\s+", " ", name).strip(" -_.[]")
+        return name
+
+    def clean_title_for_tmdb(self, raw_name: str) -> str:
+        name = raw_name
+
+        name = re.sub(r"(?i)www\..*$", " ", name)
+        name = re.sub(r"(?i)newpct\d*.*$", " ", name)
+
+        name = name.replace(".", " ").replace("_", " ")
+
+        name = re.sub(r"\[[^\]]*\]", " ", name)
+        name = re.sub(r"\([^\)]*\)", " ", name)
+
+        name = re.sub(r"(?i)\b(mkv|mp4|avi|mov|m4v|ts)\b", " ", name)
+
+        name = QUALITY_TOKENS.sub(" ", name)
+        name = re.sub(
+            r"(?i)\b(BD1080|BD720|MicroHD|Castellano|Japones|Japonés|Japanese|Subs?|AC3|DTS|5\.1|5 1|ES|EN)\b",
+            " ",
+            name,
+        )
+
+        name = re.sub(r"\s+", " ", name).strip(" -_.[]")
+        logging.info("TMDb query limpia: raw=%s -> query=%s", raw_name, name)
         return name
 
     def detect_episode(self, name: str) -> Tuple[Optional[int], Optional[int]]:
@@ -352,6 +395,148 @@ class MediaOrganizer:
 
         return preferred_category, parsed_title
 
+    def load_tmdb_cache(self) -> dict:
+        try:
+            if TMDB_CACHE_FILE.exists():
+                return json.loads(TMDB_CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            logging.exception("No se pudo leer caché TMDb")
+        return {}
+
+    def save_tmdb_cache(self, cache: dict):
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            TMDB_CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            logging.exception("No se pudo guardar caché TMDb")
+
+    def tmdb_search_multi(self, query: str) -> Optional[dict]:
+        if not TMDB_API_KEY:
+            logging.info("TMDb no configurado: falta TMDB_API_KEY")
+            return None
+
+        query = query.strip()
+        if not query:
+            return None
+
+        cache = self.load_tmdb_cache()
+        cache_key = self.normalize_name(query)
+
+        if cache_key in cache:
+            return cache[cache_key]
+
+        url = "https://api.themoviedb.org/3/search/multi"
+        params = {
+            "api_key": TMDB_API_KEY,
+            "query": query,
+            "language": "es-ES",
+            "include_adult": "false",
+        }
+
+        try:
+            response = requests.get(url, params=params, timeout=8)
+            response.raise_for_status()
+            data = response.json()
+            results = [
+                r for r in data.get("results", [])
+                if r.get("media_type") in {"movie", "tv"}
+            ]
+
+            if not results:
+                cache[cache_key] = None
+                self.save_tmdb_cache(cache)
+                logging.info("TMDb sin resultados para query=%s", query)
+                return None
+
+            result = sorted(
+                results,
+                key=lambda r: (
+                    self.normalize_name(r.get("title") or r.get("name") or "") == self.normalize_name(query),
+                    r.get("popularity", 0),
+                    r.get("vote_count", 0),
+                ),
+                reverse=True,
+            )[0]
+
+            cache[cache_key] = result
+            self.save_tmdb_cache(cache)
+            return result
+
+        except Exception:
+            logging.exception("Error consultando TMDb para query=%s", query)
+            return None
+
+    def classify_with_tmdb(self, path: Path) -> Optional[MediaInfo]:
+        raw_candidates = [
+            path.parent.name if path.parent != INBOX_DIR else "",
+            path.stem,
+        ]
+
+        extension = path.suffix.lower()
+
+        for raw in raw_candidates:
+            query = self.clean_title_for_tmdb(raw)
+            if not query:
+                continue
+
+            result = self.tmdb_search_multi(query)
+            if not result:
+                continue
+
+            media_type = result.get("media_type")
+            genre_ids = result.get("genre_ids", [])
+            original_language = result.get("original_language")
+            origin_country = result.get("origin_country") or []
+
+            if media_type == "movie":
+                title = result.get("title") or result.get("original_title") or query
+
+                year = None
+                release_date = result.get("release_date")
+                if release_date and len(release_date) >= 4 and release_date[:4].isdigit():
+                    year = int(release_date[:4])
+
+                is_animation = 16 in genre_ids
+                is_japanese = original_language == "ja" or "JP" in origin_country
+                category = "anime" if is_animation and is_japanese else "movies"
+
+                logging.info(
+                    "TMDb fallback: %s -> %s | title=%s | year=%s | media_type=%s | genres=%s | lang=%s | country=%s",
+                    path.name,
+                    category,
+                    title,
+                    year,
+                    media_type,
+                    genre_ids,
+                    original_language,
+                    origin_country,
+                )
+
+                return MediaInfo(
+                    source_path=path,
+                    title=title,
+                    category=category,
+                    year=year,
+                    extension=extension,
+                )
+
+            if media_type == "tv":
+                title = result.get("name") or result.get("original_name") or query
+                is_animation = 16 in genre_ids
+                is_japanese = original_language == "ja" or "JP" in origin_country
+                category = "anime" if is_animation and is_japanese else "series"
+
+                logging.info(
+                    "TMDb fallback detectó TV sin episodio: %s -> %s | title=%s. Se ignora porque no hay episodio.",
+                    path.name,
+                    category,
+                    title,
+                )
+
+                return None
+
+        return None
+
     def classify(self, path: Path) -> MediaInfo:
         stem = path.stem
         lower = stem.lower()
@@ -398,6 +583,12 @@ class MediaOrganizer:
                 episode=spanish_episode,
                 extension=extension,
             )
+
+        # Antes de asumir película normal por año/calidad, probamos TMDb.
+        # Esto evita que películas anime con año o calidad acaben en Peliculas.
+        tmdb_media = self.classify_with_tmdb(path)
+        if tmdb_media:
+            return tmdb_media
 
         movie_like = year is not None or any(token in lower for token in ["movie", "film", "part ", "part-"])
         if movie_like:
