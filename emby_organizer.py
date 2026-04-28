@@ -15,6 +15,7 @@ from typing import Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
+from dotenv import load_dotenv
 
 try:
     import paramiko
@@ -25,6 +26,9 @@ except ImportError:
 # =========================
 # CONFIGURACIÓN
 # =========================
+PROJECT_ROOT = Path(__file__).resolve().parent
+load_dotenv(PROJECT_ROOT / ".env")
+
 INBOX_DIR = Path("/home/tone/Documentos/Torrent/Descargas")
 STABLE_SECONDS = 180
 SCAN_INTERVAL_SECONDS = 30
@@ -35,7 +39,7 @@ QUARANTINE_LOCAL_DIR = INBOX_DIR / "NoClasificado"
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 TMDB_CACHE_FILE = STATE_DIR / "tmdb_cache.json"
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts"}
@@ -44,9 +48,9 @@ IGNORE_FILENAMES = {"canal telegram oficial.url"}
 IGNORE_DIR_NAMES = {"NoClasificado", ".staging", ".git"}
 
 LIBRARIES = {
-    "anime": "sftp://tonecas@192.168.1.177:2222/media/Peliculas/Biblioteca/Anime",
-    "series": "sftp://tonecas@192.168.1.177:2222/media/Peliculas/Biblioteca/Series",
-    "movies": "sftp://tonecas@192.168.1.177:2222/media/Peliculas/Biblioteca/Peliculas",
+    "anime": os.environ.get("EMBY_SFTP_ANIME_URL", ""),
+    "series": os.environ.get("EMBY_SFTP_SERIES_URL", ""),
+    "movies": os.environ.get("EMBY_SFTP_MOVIES_URL", ""),
 }
 
 ANIME_HINTS = {
@@ -112,7 +116,7 @@ class SftpUploader:
         self._transport = None
         self._sftp = None
         self._active_key = None
-        self._password = os.environ.get("EMBY_SFTP_PASSWORD")
+        self._password = os.environ.get("EMBY_SFTP_PASSWORD") or None
 
     @staticmethod
     def _parse_sftp_url(url: str) -> SftpTarget:

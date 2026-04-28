@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WATCH_DIR="/media/Peliculas/Biblioteca/"
-EMBY_URL="http://127.0.0.1:8096"
-API_KEY="8032fc8aba06442083457e613330b29a"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ENV_FILE="${EMBY_ORGANIZER_ENV_FILE:-$PROJECT_ROOT/.env}"
+
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+WATCH_DIR="${EMBY_WATCH_DIR:-/media/Peliculas/Biblioteca/}"
+EMBY_URL="${EMBY_URL:?EMBY_URL is required}"
+EMBY_API_KEY="${EMBY_API_KEY:?EMBY_API_KEY is required}"
 COOLDOWN=180 #tiempo sin eventos antes de refrescar
-TELEGRAM_BOT_TOKEN="7803120206:AAFlEFBKQE2JMOcUyOz_iyGFM-5vkgVkGlw"
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-${TELEGRAM_TOKEN:-}}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:?TELEGRAM_CHAT_ID is required}"
 
 log() {
   echo "[$(date '+%F %T')] $*"
@@ -27,14 +39,16 @@ refresh_emby() {
 
   log "Lanzando refresh de Emby..."
   curl -fsS -X POST \
-    "${EMBY_URL}/Library/Refresh?api_key=${API_KEY}" >/dev/null
+    "${EMBY_URL}/Library/Refresh?api_key=${EMBY_API_KEY}" >/dev/null
 
   log "Refresh enviado a Emby"
 
-  curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-    -d "chat_id=398639807" \
-    --data-urlencode "text=📺 Emby actualizado
+  if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+      -d "chat_id=${TELEGRAM_CHAT_ID}" \
+      --data-urlencode "text=📺 Emby actualizado
 🎬 Nuevo contenido añadido" >/dev/null
+  fi
 }
 
 last_event_time=0

@@ -3,6 +3,9 @@ __pycache__/
 *.log
 .env
 .env.*
+!.env.example
+.codex
+.codex/
 *.bak
 *.torrent
 *.mkv
@@ -13,5 +16,9 @@ __pycache__/
 NoClasificado/
 .cache/
 tmp/
+data/
+*.sqlite
+*.sqlite3
+*.db
 .vscode/
 .idea/

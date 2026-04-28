@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/tone/Documentos/Agentes/emby-organizer
+EnvironmentFile=/home/tone/Documentos/Agentes/emby-organizer/.env
 ExecStart=/usr/bin/python3 /home/tone/Documentos/Agentes/emby-organizer/emby_organizer.py --daemon
 Restart=always
 RestartSec=10

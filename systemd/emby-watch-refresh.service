@@ -3,6 +3,7 @@ Description=Watcher de Emby (auto refresh biblioteca)
 After=network.target
 
 [Service]
+EnvironmentFile=/home/tone/Documentos/Agentes/emby-organizer/.env
 ExecStart=/usr/local/bin/emby-watch-refresh.sh
 Restart=always
 RestartSec=5
