@@ -1,31 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ENV_FILE="${EMBY_ORGANIZER_ENV_FILE:-$PROJECT_ROOT/.env}"
+: "${EMBY_WATCH_DIR:?EMBY_WATCH_DIR is required}"
+: "${EMBY_URL:?EMBY_URL is required}"
+: "${EMBY_API_KEY:?EMBY_API_KEY is required}"
 
-if [ -f "$ENV_FILE" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
-fi
-
-WATCH_DIR="${EMBY_WATCH_DIR:-/media/Peliculas/Biblioteca/}"
-EMBY_URL="${EMBY_URL:?EMBY_URL is required}"
-EMBY_API_KEY="${EMBY_API_KEY:?EMBY_API_KEY is required}"
-COOLDOWN=180 #tiempo sin eventos antes de refrescar
-TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-${TELEGRAM_TOKEN:-}}"
-TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:?TELEGRAM_CHAT_ID is required}"
+COOLDOWN="${COOLDOWN:-180}"
+MIN_REFRESH_INTERVAL="${MIN_REFRESH_INTERVAL:-300}"
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 
 log() {
   echo "[$(date '+%F %T')] $*"
 }
 
+send_telegram() {
+  if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+    return
+  fi
+
+  curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    -d "chat_id=${TELEGRAM_CHAT_ID}" \
+    --data-urlencode "text=$1" >/dev/null
+}
+
 refresh_emby() {
   LAST_REFRESH_FILE="/tmp/emby-watch-last-refresh"
-  MIN_REFRESH_INTERVAL=300
 
   now="$(date +%s)"
   last="$(cat "$LAST_REFRESH_FILE" 2>/dev/null || echo 0)"
@@ -43,12 +43,7 @@ refresh_emby() {
 
   log "Refresh enviado a Emby"
 
-  if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-      -d "chat_id=${TELEGRAM_CHAT_ID}" \
-      --data-urlencode "text=📺 Emby actualizado
-🎬 Nuevo contenido añadido" >/dev/null
-  fi
+  send_telegram $'📺 Emby actualizado\n🎬 Nuevo contenido añadido'
 }
 
 last_event_time=0
@@ -56,7 +51,7 @@ last_event_time=0
 inotifywait -m -r \
   -e close_write -e moved_to -e delete -e moved_from -e create \
   --format '%e|%w%f' \
-  "$WATCH_DIR" | while IFS='|' read -r event file; do
+  "$EMBY_WATCH_DIR" | while IFS='|' read -r event file; do
 
   if [[ "$file" == *"/.Trash-"* ]] || [[ "$file" == *"/.Trash/"* ]]; then
     continue
@@ -64,13 +59,11 @@ inotifywait -m -r \
 
   should_refresh=false
 
-  # Si es carpeta, también refrescamos
   if [[ "$event" == *"ISDIR"* ]]; then
     log "Evento de carpeta detectado: $event -> $file"
     should_refresh=true
   fi
 
-  # Si es vídeo, refrescamos
   case "${file,,}" in
     *.mkv|*.avi|*.mp4|*.m4v|*.ts)
       log "Evento de vídeo detectado: $event -> $file"
