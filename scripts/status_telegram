@@ -1,0 +1,31 @@
+#!/bin/bash
+export PATH="/home/tone/bin:/home/tone/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+echo "======================================"
+echo "🧠 DASHBOARD PERSONAL"
+echo "======================================"
+echo ""
+
+echo "🎬 EMBY"
+echo "--------------------------------------"
+timeout 15s /home/tone/bin/embyStatus || echo "⚠️ Error o timeout en Emby"
+
+echo ""
+echo "📦 PAQUETES"
+echo "--------------------------------------"
+
+cd /home/tone/Documentos/Agentes/shipment-tracker-bot || exit 1
+
+echo "🔄 Actualizando tracking..."
+timeout 45s /home/tone/Documentos/Agentes/shipment-tracker-bot/.venv/bin/python -m src.shipment_checker >/tmp/shipment_register.log 2>&1
+timeout 45s /home/tone/Documentos/Agentes/shipment-tracker-bot/.venv/bin/python -m src.status_checker >/tmp/shipment_status.log 2>&1
+
+grep -E "Estado cambiado|Sin actualización disponible|Envíos entregados eliminados|No hay envíos pendientes|Too Many Requests" /tmp/shipment_status.log || true
+
+echo ""
+echo "📋 Envíos activos:"
+/home/tone/Documentos/Agentes/shipment-tracker-bot/.venv/bin/python -m src.main list
+
+echo "======================================"
+echo "✅ Dashboard completado"
+echo "======================================"

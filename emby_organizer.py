@@ -218,32 +218,53 @@ class SftpUploader:
         self._transport = None
         self._active_key = None
 
+    def _with_reconnect(self, category: str, operation):
+        """
+        Ejecuta una operación SFTP. Si la conexión quedó muerta
+        (por ejemplo: OSError: Socket is closed), reconecta y reintenta una vez.
+        """
+        try:
+            sftp, _ = self._connect(category)
+            return operation(sftp)
+        except (OSError, EOFError):
+            logging.warning("Conexión SFTP cerrada. Reconectando y reintentando...")
+            self.close()
+            sftp, _ = self._connect(category)
+            return operation(sftp)
+
     def ensure_remote_dir(self, category: str, remote_dir: str):
-        sftp, _ = self._connect(category)
-        parts = [p for p in remote_dir.strip("/").split("/") if p]
-        current = ""
-        for part in parts:
-            current += "/" + part
-            try:
-                sftp.stat(current)
-            except FileNotFoundError:
-                sftp.mkdir(current)
+        def op(sftp):
+            parts = [p for p in remote_dir.strip("/").split("/") if p]
+            current = ""
+            for part in parts:
+                current += "/" + part
+                try:
+                    sftp.stat(current)
+                except FileNotFoundError:
+                    sftp.mkdir(current)
+
+        return self._with_reconnect(category, op)
 
     def upload_file(self, local_path: Path, category: str, remote_path: str):
-        sftp, _ = self._connect(category)
         remote_dir = str(Path(remote_path).parent).replace("\\", "/")
         self.ensure_remote_dir(category, remote_dir)
         temp_remote_path = remote_path + ".uploading"
-        sftp.put(str(local_path), temp_remote_path)
-        sftp.rename(temp_remote_path, remote_path)
+
+        def op(sftp):
+            sftp.put(str(local_path), temp_remote_path)
+            sftp.rename(temp_remote_path, remote_path)
+
+        return self._with_reconnect(category, op)
 
     def exists(self, category: str, remote_path: str) -> bool:
-        sftp, _ = self._connect(category)
-        try:
-            sftp.stat(remote_path)
-            return True
-        except FileNotFoundError:
-            return False
+        def op(sftp):
+            try:
+                sftp.stat(remote_path)
+                return True
+            except FileNotFoundError:
+                return False
+
+        return self._with_reconnect(category, op)
 
     def list_remote_dirs(self, category: str) -> list[str]:
         sftp, target = self._connect(category)
