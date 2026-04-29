@@ -1,41 +1,216 @@
-# 🎬 Emby Organizer
+# 🧠 COMANDOS DEL SISTEMA – GUÍA COMPLETA ACTUALIZADA
 
-Proyecto completo de automatización para gestionar descargas,
-clasificarlas y subirlas automáticamente a Emby.
+---
 
-## 🚀 Características
+# 🎬 1. EMBY (Automatización multimedia)
 
--   Integración con OpenClaw + Telegram
--   Clasificación automática (series, anime, películas)
--   TMDb fallback inteligente
--   Subida SFTP automática
--   Refresh automático de Emby
--   Notificaciones Telegram
--   Dashboard en terminal
--   Limpieza y cuarentena
+### 📊 Estado del sistema
 
-## 📁 Estructura
+```bash
+embyStatus
+```
 
-emby-organizer/ ├── emby_organizer.py ├── scripts/ ├── systemd/ ├──
-README.md └── .gitignore
+---
 
-## ▶️ Uso
+### 📊 Dashboard completo
 
-python3 emby_organizer.py --daemon
+```bash
+/bash /home/tone/Documentos/Agentes/emby-organizer/scripts/dashboard.sh
+```
 
-## 📊 Logs
+---
 
-logsTorrent torrent logsTorrent emby embyDash
+### 🔄 Refrescar Emby manualmente
 
-## 🔐 Seguridad
+```bash
+curl -X POST "http://IP_EMBY:8096/emby/Library/Refresh?api_key=TU_API_KEY"
+```
 
-Usar variables de entorno para: - TMDB_API_KEY - TELEGRAM_BOT_TOKEN -
-TELEGRAM_CHAT_ID
+---
 
-## 🧠 Flujo
+### 📡 Estado del watcher en LXC
 
-Telegram → OpenClaw → Torrent → Organizer → SFTP → Emby → Refresh
+```bash
+systemctl status emby-watch-refresh.service
+```
 
-------------------------------------------------------------------------
+---
 
-🚀 Automatización completa de tu biblioteca multimedia.
+# 📦 2. SHIPMENT TRACKER (Seguimiento de paquetes)
+
+## ➕ Añadir envío
+
+### Automático (detecta carrier)
+
+```bash
+envio_add TRACKING
+```
+
+Ejemplo:
+
+```bash
+envio_add ES2504564636
+```
+
+---
+
+### Manual (forzando carrier)
+
+```bash
+envio_add CARRIER TRACKING
+```
+
+Ejemplo:
+
+```bash
+envio_add correos_express 63806680081074701369605
+```
+
+---
+
+## 📋 Listar envíos activos
+
+```bash
+envios
+```
+
+---
+
+## 🔄 Actualizar estados
+
+```bash
+envios_check
+```
+
+Hace automáticamente:
+
+```text
+- Register en 17track
+- Consulta estado
+- Fallback email (Amazon / Correos / CTT)
+- Detecta estados (Entregado, En reparto, Enviado)
+- Notifica por Telegram
+- Elimina entregados automáticamente
+```
+
+---
+
+## 🧠 Comportamiento del sistema
+
+```text
+1. Intenta 17track
+2. Si falla → fallback por email
+3. Detecta estado real desde correos
+4. Actualiza DB
+5. Notifica
+6. Limpia entregados
+```
+
+---
+
+# 🤖 3. COMANDOS DESDE TELEGRAM (OpenClaw)
+
+## 📦 Añadir envío
+
+```text
+/bash envio_add TRACKING
+```
+
+Ejemplo:
+
+```text
+/bash envio_add ES2504564636
+```
+
+---
+
+## 📋 Ver envíos
+
+```text
+/bash envios
+```
+
+---
+
+## 🔄 Actualizar estados
+
+```text
+/bash envios_check
+```
+
+---
+
+# 🧠 4. DASHBOARD GLOBAL (EMBY + PAQUETES)
+
+## 🚀 Comando principal
+
+```text
+/bash /home/tone/bin/status_telegram
+```
+
+---
+
+## 📊 Qué hace
+
+```text
+🎬 Muestra estado de Emby
+📦 Refresca tracking (17track + fallback)
+📋 Lista envíos activos
+⚠️ Muestra errores (429, etc.)
+```
+
+---
+
+## 🛠️ Características técnicas
+
+```text
+✔ Script limpio (sin errores de bash)
+✔ Rutas absolutas (compatibles con OpenClaw)
+✔ Uso de timeout (evita bloqueos)
+✔ Logs filtrados (salida limpia)
+✔ Compatible con Telegram
+```
+
+---
+
+# ⚠️ IMPORTANTE (BUENAS PRÁCTICAS)
+
+```text
+- No ejecutar /bash status muchas veces seguidas → evita 429
+- 17track puede tardar en actualizar estados
+- Amazon NO funciona con 17track → usa fallback email
+- Correos/CTT a veces necesitan fallback
+```
+
+---
+
+# 🚀 RESUMEN RÁPIDO
+
+```text
+📦 envios            → ver envíos
+➕ envio_add         → añadir tracking
+🔄 envios_check      → refrescar estados
+
+🎬 embyStatus        → estado Emby
+
+🧠 status_telegram   → dashboard completo
+```
+
+---
+
+# 🧩 SISTEMA COMPLETO
+
+```text
+✔ Tracking multi-carrier automático
+✔ 17track + fallback inteligente
+✔ Detección automática de carrier
+✔ Notificaciones Telegram
+✔ Limpieza automática de entregados
+✔ Integración OpenClaw
+✔ Dashboard unificado
+✔ Automatización Emby
+```
+
+---
+
+👉 Esto ya es tu **asistente personal automatizado real** 😄
