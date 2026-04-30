@@ -6,26 +6,25 @@ echo "🧠 DASHBOARD PERSONAL"
 echo "======================================"
 echo ""
 
+echo "💻 SISTEMA"
+echo "--------------------------------------"
+/home/tone/bin/system_stats
+
+echo ""
 echo "🎬 EMBY"
 echo "--------------------------------------"
-timeout 15s /home/tone/bin/embyStatus || echo "⚠️ Error o timeout en Emby"
+if command -v embyStatus >/dev/null 2>&1; then
+  timeout 15s embyStatus || echo "⚠️ Error o timeout en Emby"
+else
+  echo "⚠️ embyStatus no encontrado"
+fi
 
 echo ""
 echo "📦 PAQUETES"
 echo "--------------------------------------"
-
-cd /home/tone/Documentos/Agentes/shipment-tracker-bot || exit 1
-
-echo "🔄 Actualizando tracking..."
-timeout 45s /home/tone/Documentos/Agentes/shipment-tracker-bot/.venv/bin/python -m src.shipment_checker >/tmp/shipment_register.log 2>&1
-timeout 45s /home/tone/Documentos/Agentes/shipment-tracker-bot/.venv/bin/python -m src.status_checker >/tmp/shipment_status.log 2>&1
-
-grep -E "Estado cambiado|Sin actualización disponible|Envíos entregados eliminados|No hay envíos pendientes|Too Many Requests" /tmp/shipment_status.log || true
+/home/tone/bin/envios_check_cooldown
 
 echo ""
-echo "📋 Envíos activos:"
-/home/tone/Documentos/Agentes/shipment-tracker-bot/.venv/bin/python -m src.main list
-
 echo "======================================"
 echo "✅ Dashboard completado"
 echo "======================================"
