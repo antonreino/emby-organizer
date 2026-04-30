@@ -6,8 +6,6 @@ echo "🧠 DASHBOARD PERSONAL"
 echo "======================================"
 echo ""
 
-echo "💻 SISTEMA"
-echo "--------------------------------------"
 /home/tone/bin/system_stats
 
 echo ""
