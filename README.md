@@ -196,35 +196,3 @@ This project is open source and available under the MIT License.
 ## 📞 Support
 
 For issues and questions, please open an issue on the GitHub repository.
-
-
-# 🚀 RESUMEN RÁPIDO
-
-```text
-📦 envios            → ver envíos
-➕ envio_add         → añadir tracking
-🔄 envios_check      → refrescar estados
-
-🎬 embyStatus        → estado Emby
-
-🧠 status_telegram   → dashboard completo
-```
-
----
-
-# 🧩 SISTEMA COMPLETO
-
-```text
-✔ Tracking multi-carrier automático
-✔ 17track + fallback inteligente
-✔ Detección automática de carrier
-✔ Notificaciones Telegram
-✔ Limpieza automática de entregados
-✔ Integración OpenClaw
-✔ Dashboard unificado
-✔ Automatización Emby
-```
-
----
-
-👉 Esto ya es tu **asistente personal automatizado real** 😄
