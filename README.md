@@ -36,6 +36,20 @@ systemctl status emby-watch-refresh.service
 
 ---
 
+### ⚙️ Configuración
+
+Copia `.env.example` a `.env` y configura las variables necesarias:
+
+- `TMDB_API_KEY`: Clave de API de TMDb para metadatos de películas/series.
+- `TELEGRAM_BOT_TOKEN`: Token del bot de Telegram para notificaciones.
+- `TELEGRAM_CHAT_ID`: ID del chat de Telegram.
+- `EMBY_API_KEY`: Clave de API de Emby.
+- `EMBY_URL`: URL del servidor Emby.
+- `INBOX_DIR`: Directorio donde se descargan los archivos (opcional, por defecto `/home/tone/Documentos/Torrent/Descargas`).
+- Otras variables SFTP para conexión remota.
+
+---
+
 # 📦 2. SHIPMENT TRACKER (Seguimiento de paquetes)
 
 ## ➕ Añadir envío

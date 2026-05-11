@@ -29,7 +29,7 @@ except ImportError:
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-INBOX_DIR = Path("/home/tone/Documentos/Torrent/Descargas")
+INBOX_DIR = Path(os.environ.get("INBOX_DIR", "/home/tone/Documentos/Torrent/Descargas"))
 STABLE_SECONDS = 180
 SCAN_INTERVAL_SECONDS = 30
 LOG_FILE = Path.home() / ".local" / "share" / "emby_organizer" / "organizer.log"
