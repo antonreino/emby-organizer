@@ -63,6 +63,21 @@ ANIME_HINTS = {
     "japanese",
     "japones",
     "japonés",
+    "erai-raws",
+    "subsplease",
+    "horriblesubs",
+    "multi-sub",
+    "multisub",
+}
+
+ANIME_RELEASE_GROUPS = {
+    "erai-raws",
+    "subsplease",
+    "horriblesubs",
+    "judas",
+    "ember",
+    "anime time",
+    "nyaa",
 }
 
 SERIES_EPISODE_PATTERNS = [
@@ -78,9 +93,12 @@ SPANISH_EPISODE_PATTERNS = [
 ]
 
 QUALITY_TOKENS = re.compile(
-    r"(?i)\b(2160p|1080p|720p|480p|x264|x265|h\.264|h\.265|hevc|bluray|bdrip|webrip|web-dl|hdrip|dvdrip|aac|dts|10bit|8bit|multi|multi-audio|dual audio|subbed|proper|repack|hdtv|microhd)\b"
+    r"(?i)\b(2160p|1080p|720p|480p|x264|x265|h\.264|h\.265|hevc|bluray|bdrip|webrip|web-dl|web dl|hdrip|dvdrip|aac|dts|10bit|8bit|multi|multi-audio|dual audio|subbed|proper|repack|hdtv|microhd|cr|avc)\b"
 )
 YEAR_PATTERN = re.compile(r"\b(19\d{2}|20\d{2})\b")
+HASH_BLOCK_PATTERN = re.compile(r"\[[A-F0-9]{6,10}\]", re.IGNORECASE)
+BRACKET_BLOCK_PATTERN = re.compile(r"\[[^\]]+\]")
+PAREN_BLOCK_PATTERN = re.compile(r"\([^\)]+\)")
 
 
 @dataclass
@@ -289,7 +307,7 @@ class SftpUploader:
         # Series normales o anime episódico.
         if media.category in {"series", "anime"} and media.episode is not None:
             season = media.season or 1
-            filename = f"S{season:02d}E{media.episode:02d}{media.extension}"
+            filename = f"S{season:02d}E{media.episode:03d}{media.extension}" if media.category == "anime" and media.episode >= 100 else f"S{season:02d}E{media.episode:02d}{media.extension}"
             return f"{target.path}/{safe_title}/Season {season}/{filename}"
 
         # Películas SIN carpeta (estructura plana)
@@ -339,8 +357,8 @@ class MediaOrganizer:
 
     def clean_title(self, raw_name: str) -> str:
         name = raw_name.replace(".", " ").replace("_", " ")
-        name = re.sub(r"\[[A-F0-9]{6,8}\]", "", name, flags=re.IGNORECASE)
         name = re.sub(r"^\[[^\]]+\]\s*", "", name)
+        name = HASH_BLOCK_PATTERN.sub("", name)
         name = re.sub(r"(?i)\[Cap[ ._-]?\d{1,4}\]", "", name)
         name = re.sub(r"(?i)\bCap[íi]?tulo[ ._-]?\d{1,4}\b", "", name)
         name = re.sub(r"(?i)\bCap[ ._-]?\d{1,4}\b", "", name)
@@ -350,6 +368,43 @@ class MediaOrganizer:
         name = re.sub(r"\[\s*\]", "", name)
         name = re.sub(r"\s+", " ", name).strip(" -_.[]")
         return name
+
+    def clean_release_title(self, raw_title: str) -> str:
+        """Limpia títulos procedentes de releases anime/fansub sin tocar el número de episodio."""
+        title = raw_title.replace(".", " ").replace("_", " ")
+        title = QUALITY_TOKENS.sub(" ", title)
+        title = re.sub(r"(?i)\b(mkv|mp4|avi|mov|m4v|ts)\b", " ", title)
+        title = re.sub(r"\s+", " ", title).strip(" -_.[]")
+        return title
+
+    def strip_release_noise(self, raw_name: str) -> Tuple[str, Optional[str]]:
+        """
+        Limpia releases tipo:
+          [Erai-raws] Naruto Shippuuden - 290 [1080p CR WEB-DL AVC AAC][MultiSub][26C1ED83]
+
+        Devuelve:
+          ("Naruto Shippuuden - 290", "Erai-raws")
+        """
+        name = Path(raw_name).stem
+        release_group = None
+
+        initial_group = re.match(r"^\[(?P<group>[^\]]+)\]\s*(?P<rest>.*)$", name)
+        if initial_group:
+            release_group = initial_group.group("group").strip()
+            name = initial_group.group("rest").strip()
+
+        name = HASH_BLOCK_PATTERN.sub(" ", name)
+        name = BRACKET_BLOCK_PATTERN.sub(" ", name)
+
+        # Paréntesis solo si parecen metadatos técnicos. Evitamos eliminar títulos legítimos.
+        name = re.sub(
+            r"(?i)\((?:\d{3,4}p|WEB-DL|WEBRip|BluRay|BDRip|AAC|HEVC|AVC|x264|x265|10bit|8bit|MultiSub|Dual Audio).*?\)",
+            " ",
+            name,
+        )
+
+        name = re.sub(r"\s+", " ", name).strip(" -_.[]")
+        return name, release_group
 
     def clean_title_for_tmdb(self, raw_name: str) -> str:
         name = raw_name
@@ -382,11 +437,19 @@ class MediaOrganizer:
                 return int(match.group("season")), int(match.group("episode"))
         return None, None
 
-    def detect_spanish_episode(self, name: str) -> Tuple[Optional[int], Optional[int]]:
+    def detect_spanish_episode(self, name: str, force_absolute: bool = False) -> Tuple[Optional[int], Optional[int]]:
+        """
+        Detecta Cap.XX / Capítulo XX.
+
+        Si force_absolute=True, NO interpreta 290 como S02E90.
+        Esto es importante para anime con numeración absoluta.
+        """
         for pattern in SPANISH_EPISODE_PATTERNS:
             match = pattern.search(name)
             if match:
                 raw = match.group("episode")
+                if force_absolute:
+                    return 1, int(raw)
                 if len(raw) >= 3:
                     season = int(raw[:-2])
                     episode = int(raw[-2:])
@@ -395,6 +458,91 @@ class MediaOrganizer:
                     episode = int(raw)
                 return season, episode
         return None, None
+
+    def detect_anime_release(self, path: Path) -> Optional[MediaInfo]:
+        """
+        Detecta anime en formato release/fansub/scene, antes de reglas genéricas.
+
+        Casos cubiertos:
+          [Erai-raws] Naruto Shippuuden - 290 [1080p CR WEB-DL AVC AAC][MultiSub][26C1ED83].mkv
+          [SubsPlease] One Piece - 1120 (1080p) [A1B2C3D4].mkv
+          [HorribleSubs] Bleach - 045 [720p].mkv
+          Naruto Shippuden - Cap.291.mkv
+          Naruto Shippuden - 291.mkv
+
+        Decisión de diseño:
+          - El número se trata como episodio absoluto de anime.
+          - No se convierte 290 en S02E90.
+          - Por defecto se envía a Anime/Título/Season 1/S01E290.mkv.
+        """
+        extension = path.suffix.lower()
+        cleaned, release_group = self.strip_release_noise(path.name)
+        parent_cleaned, parent_group = self.strip_release_noise(path.parent.name)
+
+        group_l = (release_group or parent_group or "").lower()
+        lower_cleaned = cleaned.lower()
+        lower_parent = parent_cleaned.lower()
+        lower_original = path.name.lower()
+
+        has_anime_release_signal = (
+            group_l in ANIME_RELEASE_GROUPS
+            or any(hint in lower_original for hint in ANIME_HINTS)
+            or any(hint in lower_parent for hint in ANIME_HINTS)
+        )
+
+        # Formatos habituales: "Titulo - 290", "Titulo 290", "Titulo - Cap.290".
+        patterns = [
+            re.compile(r"^(?P<title>.+?)\s*[-–—]\s*(?:Cap\.?\s*)?(?P<episode>\d{1,4})(?:\s+v\d+)?$", re.IGNORECASE),
+            re.compile(r"^(?P<title>.+?)\s+Cap\.?\s*(?P<episode>\d{1,4})(?:\s+v\d+)?$", re.IGNORECASE),
+            re.compile(r"^(?P<title>.+?)\s+(?P<episode>\d{1,4})(?:\s+v\d+)?$", re.IGNORECASE),
+        ]
+
+        for pattern in patterns:
+            match = pattern.search(cleaned)
+            if not match:
+                continue
+
+            title = self.clean_release_title(match.group("title"))
+            episode = int(match.group("episode"))
+
+            if episode <= 0:
+                return None
+
+            # Seguridad: sin grupo ni pista anime, no queremos convertir cualquier "Película - 2024" en anime.
+            # Permitimos episodios altos si hay patrón claro de Cap. o release group; para episodios bajos exigimos señal anime.
+            if not has_anime_release_signal:
+                cap_like = re.search(r"(?i)\bCap\.?\s*\d{1,4}\b", cleaned) is not None
+                if not cap_like:
+                    return None
+
+            if not title:
+                return None
+
+            category, final_title = self.resolve_existing_series(title, "anime")
+            if category != "anime" and has_anime_release_signal:
+                # Si existe en Series por error, mantenemos resolución; si no, forzamos Anime por señal fuerte.
+                category = "anime"
+                final_title = title
+
+            logging.info(
+                "Anime release detectado: file=%s | cleaned=%s | group=%s | title=%s | episode_abs=%s",
+                path.name,
+                cleaned,
+                release_group,
+                final_title,
+                episode,
+            )
+
+            return MediaInfo(
+                source_path=path,
+                title=final_title,
+                category="anime",
+                season=1,
+                episode=episode,
+                extension=extension,
+            )
+
+        return None
 
     def detect_year(self, name: str) -> Optional[int]:
         match = YEAR_PATTERN.search(name)
@@ -573,6 +721,13 @@ class MediaOrganizer:
         parent_lower = parent_stem.lower()
         extension = path.suffix.lower()
 
+        # 1) Primero, releases anime/fansub/scene.
+        # Esto evita que "[Erai-raws] Naruto Shippuuden - 290 [...]" acabe en NoClasificado
+        # o que "Cap.290" se convierta erróneamente en S02E90.
+        anime_release = self.detect_anime_release(path)
+        if anime_release:
+            return anime_release
+
         season, episode = self.detect_episode(stem)
         if season is None or episode is None:
             season, episode = self.detect_episode(parent_stem)
@@ -596,9 +751,12 @@ class MediaOrganizer:
                 extension=extension,
             )
 
-        spanish_season, spanish_episode = self.detect_spanish_episode(stem)
+        # 2) Capítulos en español.
+        # Si hay contexto anime, Cap.290 debe tratarse como episodio absoluto S01E290,
+        # no como S02E90.
+        spanish_season, spanish_episode = self.detect_spanish_episode(stem, force_absolute=anime_context)
         if spanish_season is None or spanish_episode is None:
-            spanish_season, spanish_episode = self.detect_spanish_episode(parent_stem)
+            spanish_season, spanish_episode = self.detect_spanish_episode(parent_stem, force_absolute=anime_context)
 
         if spanish_season is not None and spanish_episode is not None:
             final_title = parent_title or title
@@ -722,7 +880,7 @@ class MediaOrganizer:
         category = category_names.get(media.category, media.category)
 
         if media.episode is not None:
-            detail = f"{media.title} - S{media.season or 1:02d}E{media.episode:02d}"
+            detail = f"{media.title} - S{media.season or 1:02d}E{media.episode:03d}" if media.category == "anime" and media.episode >= 100 else f"{media.title} - S{media.season or 1:02d}E{media.episode:02d}"
         else:
             detail = media.title if media.year is None else f"{media.title} ({media.year})"
 

@@ -14,7 +14,7 @@ EMBY_PORT="${EMBY_PORT:?EMBY_PORT is required}"
 
 ORGANIZER_STATUS="$(systemctl --user is-active emby-organizer.service)"
 TORRENT_STATUS="$(systemctl --user is-active openclaw-torrent-watch.service)"
-EMBY_WATCHER_STATUS="$(ssh -p "$EMBY_PORT" "$EMBY_HOST" "systemctl is-active emby-watch-refresh.service" 2>/dev/null || echo unknown)"
+EMBY_WATCHER_STATUS="$(timeout 8s ssh -o BatchMode=yes -o ConnectTimeout=5 -p "$EMBY_PORT" "$EMBY_HOST" "systemctl is-active emby-watch-refresh.service" 2>/dev/null || echo unknown)"
 
 echo "======================================"
 echo "🎬 EMBY AUTOMATION DASHBOARD"
