@@ -1,202 +1,202 @@
-# 🧠 COMANDOS DEL SISTEMA – GUÍA COMPLETA ACTUALIZADA
+# 🎬 Emby Organizer
 
----
+Automated media library organization and management system for Emby media servers. This tool monitors a download directory, intelligently classifies and organizes media files (movies, TV series, and anime), and automatically syncs them to your Emby library with proper naming conventions and metadata enrichment.
 
-# 🎬 1. EMBY (Automatización multimedia)
+## ✨ Features
 
-### 📊 Estado del sistema
+- **Automatic Media Classification**: Intelligently distinguishes between movies, TV series, and anime based on filename patterns and metadata
+- **Smart File Organization**: Automatically renames and organizes files according to Emby library standards
+- **Metadata Enrichment**: Fetches metadata from TMDb (The Movie Database) for accurate information
+- **Library Management**: Monitors downloads, detects stable files, and triggers Emby library refreshes
+- **Remote Server Support**: SFTP/SSH support for remote Emby servers with configurable authentication
+- **Telegram Notifications**: Real-time alerts for organization events and library updates
+- **Systemd Integration**: Runs as a background service for continuous monitoring
+- **Multi-Library Support**: Supports separate libraries for Anime, TV Series, and Movies
 
-```bash
-embyStatus
-```
+## 📋 Requirements
 
----
+- Python 3.7+
+- Emby Server
+- (Optional) Remote SSH/SFTP server access
+- (Optional) Telegram Bot for notifications
+- (Optional) TMDb API key for metadata enrichment
 
-### 📊 Dashboard completo
+## 🚀 Installation
 
-```bash
-/bash /home/tone/Documentos/Agentes/emby-organizer/scripts/dashboard.sh
-```
-
----
-
-### 🔄 Refrescar Emby manualmente
-
-```bash
-curl -X POST "http://IP_EMBY:8096/emby/Library/Refresh?api_key=TU_API_KEY"
-```
-
----
-
-### 📡 Estado del watcher en LXC
+### 1. Clone the repository
 
 ```bash
-systemctl status emby-watch-refresh.service
+git clone https://github.com/antonreino/emby-organizer.git
+cd emby-organizer
 ```
 
----
-
-### ⚙️ Configuración
-
-Copia `.env.example` a `.env` y configura las variables necesarias:
-
-- `TMDB_API_KEY`: Clave de API de TMDb para metadatos de películas/series.
-- `TELEGRAM_BOT_TOKEN`: Token del bot de Telegram para notificaciones.
-- `TELEGRAM_CHAT_ID`: ID del chat de Telegram.
-- `EMBY_API_KEY`: Clave de API de Emby.
-- `EMBY_URL`: URL del servidor Emby.
-- `INBOX_DIR`: Directorio donde se descargan los archivos (opcional, por defecto `/home/tone/Documentos/Torrent/Descargas`).
-- Otras variables SFTP para conexión remota.
-
----
-
-# 📦 2. SHIPMENT TRACKER (Seguimiento de paquetes)
-
-## ➕ Añadir envío
-
-### Automático (detecta carrier)
+### 2. Install dependencies
 
 ```bash
-envio_add TRACKING
+pip install -r requirements.txt
 ```
 
-Ejemplo:
+### 3. Configure environment variables
+
+Copy `.env.example` to `.env` and fill in your credentials:
 
 ```bash
-envio_add ES2504564636
+cp .env.example .env
 ```
 
----
+### Configuration Options
 
-### Manual (forzando carrier)
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TMDB_API_KEY` | Optional | TMDb API key for metadata enrichment ([Get one here](https://www.themoviedb.org/settings/api)) |
+| `TELEGRAM_BOT_TOKEN` | Optional | Telegram bot token for notifications |
+| `TELEGRAM_CHAT_ID` | Optional | Telegram chat ID for notifications |
+| `EMBY_API_KEY` | Yes | Emby server API key |
+| `EMBY_URL` | Yes | Emby server URL (e.g., `http://127.0.0.1:8096`) |
+| `INBOX_DIR` | Optional | Download directory (defaults to `/home/tone/Documentos/Torrent/Descargas`) |
+| `EMBY_HOST` | Optional | SSH host for remote server (`user@host`) |
+| `EMBY_PORT` | Optional | SSH port (default: 2222) |
+| `EMBY_WATCH_DIR` | Optional | Remote watch directory path |
+| `EMBY_SFTP_PASSWORD` | Optional | SSH password (leave empty for SSH key authentication) |
+| `EMBY_SFTP_ANIME_URL`, `EMBY_SFTP_SERIES_URL`, `EMBY_SFTP_MOVIES_URL` | Optional | SFTP URLs for remote library destinations |
+
+## 📖 Usage
+
+### As a Script
 
 ```bash
-envio_add CARRIER TRACKING
+python emby_organizer.py
 ```
 
-Ejemplo:
+The script will monitor the configured download directory and automatically organize new files.
+
+### As a Systemd Service
+
+Install the systemd service file:
 
 ```bash
-envio_add correos_express 63806680081074701369605
+sudo cp systemd/emby-organizer.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable emby-organizer.service
+sudo systemctl start emby-organizer.service
 ```
 
----
-
-## 📋 Listar envíos activos
+Check service status:
 
 ```bash
-envios
+sudo systemctl status emby-organizer.service
+systemctl logs -u emby-organizer.service -f
 ```
 
----
-
-## 🔄 Actualizar estados
+### Refresh Emby Manually
 
 ```bash
-envios_check
+curl -X POST "http://YOUR_EMBY_IP:8096/emby/Library/Refresh?api_key=YOUR_API_KEY"
 ```
 
-Hace automáticamente:
+### Watch Service (Monitors for New Files)
 
-```text
-- Register en 17track
-- Consulta estado
-- Fallback email (Amazon / Correos / CTT)
-- Detecta estados (Entregado, En reparto, Enviado)
-- Notifica por Telegram
-- Elimina entregados automáticamente
+The project includes a watch service that monitors a remote Emby directory:
+
+```bash
+sudo cp systemd/emby-watch-refresh.service /etc/systemd/system/
+sudo systemctl enable emby-watch-refresh.service
+sudo systemctl start emby-watch-refresh.service
 ```
 
----
+## 🎯 How It Works
 
-## 🧠 Comportamiento del sistema
+1. **Continuous Monitoring**: Watches the configured inbox directory for new files
+2. **Stability Detection**: Waits for files to be stable (no changes for 180 seconds) before processing
+3. **Classification**: Analyzes filename and metadata to classify content
+4. **Naming Convention**: Renames files according to Emby standards
+   - Movies: `Movie Title (Year).mkv`
+   - TV Series: `Series Name - S01E01 - Episode Title.mkv`
+   - Anime: `Anime Title - 001 - Episode Title.mkv`
+5. **Organization**: Moves files to appropriate library directories
+6. **Metadata Fetch**: Queries TMDb for accurate information (if API key configured)
+7. **Library Update**: Triggers Emby library refresh to index new content
+8. **Notifications**: Sends Telegram notifications for processed content (if configured)
 
-```text
-1. Intenta 17track
-2. Si falla → fallback por email
-3. Detecta estado real desde correos
-4. Actualiza DB
-5. Notifica
-6. Limpia entregados
+## 📊 Media Classification Logic
+
+The organizer uses multiple heuristics to classify content:
+
+- **Anime Detection**: Recognizes common anime markers (anime hints, release groups, naming patterns)
+- **Series Detection**: Identifies episode patterns (S01E01, 1x01, "Cap 01")
+- **Movie Detection**: Falls back to movie classification when series patterns aren't found
+
+## 🔐 Security
+
+- All sensitive data (API keys, passwords) are managed through environment variables
+- The `.env` file is excluded from version control (see `.gitignore`)
+- SSH key authentication is preferred over passwords for remote access
+- No credentials are logged or exposed in output
+
+## 📝 Logs
+
+Logs are stored in:
+```
+~/.local/share/emby_organizer/organizer.log
 ```
 
----
+## 🛠️ Project Structure
 
-# 🤖 3. COMANDOS DESDE TELEGRAM (OpenClaw)
-
-## 📦 Añadir envío
-
-```text
-/bash envio_add TRACKING
+```
+.
+├── emby_organizer.py          # Main application
+├── requirements.txt            # Python dependencies
+├── README.md                   # This file
+├── .env.example               # Configuration template
+├── scripts/
+│   ├── emby-watch-refresh.sh  # Watch and refresh script
+│   ├── dashboard.sh           # Status dashboard
+│   ├── logs.sh                # Log viewer
+│   ├── status.sh              # Quick status check
+│   └── ...
+└── systemd/
+    ├── emby-organizer.service      # Main service
+    └── emby-watch-refresh.service  # Watch service
 ```
 
-Ejemplo:
+## 🤝 Contributing
 
-```text
-/bash envio_add ES2504564636
-```
+Feel free to open issues and pull requests to improve this project.
 
----
+## 📄 License
 
-## 📋 Ver envíos
+This project is open source and available under the MIT License.
 
-```text
-/bash envios
-```
+## 🐛 Troubleshooting
 
----
+### Files not being organized
 
-## 🔄 Actualizar estados
+- Check that `INBOX_DIR` is correctly configured
+- Verify file permissions on the source directory
+- Check logs: `~/.local/share/emby_organizer/organizer.log`
 
-```text
-/bash envios_check
-```
+### Metadata not being fetched
 
----
+- Ensure `TMDB_API_KEY` is set and valid
+- Check internet connectivity
+- TMDb might rate-limit requests during high load
 
-# 🧠 4. DASHBOARD GLOBAL (EMBY + PAQUETES)
+### Emby library not updating
 
-## 🚀 Comando principal
+- Verify `EMBY_API_KEY` and `EMBY_URL` are correct
+- Check Emby server is accessible at the configured URL
+- Ensure the API key has appropriate permissions
 
-```text
-/bash /home/tone/bin/status_telegram
-```
+### Remote SFTP issues
 
----
+- Verify SSH credentials and key permissions (`chmod 600`)
+- Test connection manually: `ssh -p PORT user@host`
+- Check `EMBY_WATCH_DIR` path exists on remote server
 
-## 📊 Qué hace
+## 📞 Support
 
-```text
-🎬 Muestra estado de Emby
-📦 Refresca tracking (17track + fallback)
-📋 Lista envíos activos
-⚠️ Muestra errores (429, etc.)
-```
+For issues and questions, please open an issue on the GitHub repository.
 
----
-
-## 🛠️ Características técnicas
-
-```text
-✔ Script limpio (sin errores de bash)
-✔ Rutas absolutas (compatibles con OpenClaw)
-✔ Uso de timeout (evita bloqueos)
-✔ Logs filtrados (salida limpia)
-✔ Compatible con Telegram
-```
-
----
-
-# ⚠️ IMPORTANTE (BUENAS PRÁCTICAS)
-
-```text
-- No ejecutar /bash status muchas veces seguidas → evita 429
-- 17track puede tardar en actualizar estados
-- Amazon NO funciona con 17track → usa fallback email
-- Correos/CTT a veces necesitan fallback
-```
-
----
 
 # 🚀 RESUMEN RÁPIDO
 
