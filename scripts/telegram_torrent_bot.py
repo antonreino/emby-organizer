@@ -354,7 +354,7 @@ def run_game_download(job: dict):
         if job.get("probe_error"):
             start_text += "\n⚠️ No pude leer todas las cabeceras; curl lo intentará igualmente."
         send_message(chat_id, start_text)
-        print(f"Juego #{job['id']}: {url}\nDestino: {target}", flush=True)
+        print(f"Juego #{job['id']}: {name}\nDestino: {target}", flush=True)
 
         for attempt in range(1, GAME_MAX_RETRIES + 1):
             job["attempt"] = attempt
