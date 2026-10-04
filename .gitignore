@@ -1,0 +1,47 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+.venv+/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+
+# Runtime
+.cache/
+tmp/
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.bak
+*.bak.*
+
+# Descargas / multimedia
+*.torrent
+*.part
+*.mkv
+*.mp4
+*.avi
+*.mov
+*.ts
+
+NoClasificado/
+# Archive metadata
+__MACOSX/
