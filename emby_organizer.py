@@ -17,6 +17,8 @@ from urllib.parse import urlparse
 import requests
 from dotenv import load_dotenv
 
+from state_db import add_history, init_db
+
 try:
     import paramiko
 except ImportError:
@@ -326,6 +328,7 @@ class MediaOrganizer:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         QUARANTINE_LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+        init_db()
 
     def shutdown(self):
         self.uploader.close()
@@ -799,12 +802,25 @@ class MediaOrganizer:
         if destination.exists():
             destination = QUARANTINE_LOCAL_DIR / self._dedupe_name(path.name, QUARANTINE_LOCAL_DIR)
 
+        try:
+            size_bytes = path.stat().st_size
+        except OSError:
+            size_bytes = None
+
         if self.dry_run:
             logging.warning("[DRY-RUN] Cuarentena: %s -> %s | Motivo: %s", path, destination, reason)
+            add_history(
+                "organizer", "dry-run", title=path.name, source_path=str(path),
+                destination=str(destination), details=reason, size_bytes=size_bytes,
+            )
             return
 
         shutil.move(str(path), str(destination))
         logging.warning("Cuarentena: %s -> %s | Motivo: %s", path, destination, reason)
+        add_history(
+            "organizer", "quarantined", title=path.name, source_path=str(path),
+            destination=str(destination), details=reason, size_bytes=size_bytes,
+        )
 
     def _dedupe_name(self, filename: str, folder: Path) -> str:
         stem = Path(filename).stem
@@ -925,15 +941,27 @@ class MediaOrganizer:
 
         if self.dry_run:
             logging.info("[DRY-RUN] Se subiría: %s -> %s", path, remote_path)
+            add_history(
+                "organizer", "dry-run", title=media.title, category=media.category,
+                source_path=str(path), destination=remote_path,
+                details="Subida simulada",
+                size_bytes=path.stat().st_size if path.exists() else None,
+            )
             return
 
         if self.uploader.exists(media.category, remote_path):
             self.quarantine(path, f"El archivo remoto ya existe: {remote_path}")
             return
 
+        size_bytes = path.stat().st_size if path.exists() else None
         self.uploader.upload_file(path, media.category, remote_path)
         path.unlink()
         logging.info("Subido y eliminado localmente: %s", path)
+        add_history(
+            "organizer", "success", title=media.title, category=media.category,
+            source_path=str(path), destination=remote_path,
+            details="Subido a Emby", size_bytes=size_bytes,
+        )
 
         self.notify_telegram(media, remote_path)
 
@@ -957,8 +985,12 @@ class MediaOrganizer:
         while True:
             try:
                 self.scan_once()
-            except Exception:
+            except Exception as exc:
                 logging.exception("Error durante el escaneo")
+                add_history(
+                    "organizer", "error", title="Error durante el escaneo",
+                    details=str(exc),
+                )
             time.sleep(SCAN_INTERVAL_SECONDS)
 
 

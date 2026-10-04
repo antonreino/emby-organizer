@@ -12,11 +12,13 @@ Automatización personal para organizar películas, series y anime, moverlos por
 - Recibe archivos `.torrent` por Telegram.
 - `/juego URL` realiza descargas directas con `curl`, reanudación y reintentos.
 - Hasta `GAME_MAX_CONCURRENT` descargas directas simultáneas; el resto queda en cola.
+- La cola de `/juego` se guarda en SQLite y se recupera automáticamente tras reinicios.
 - `/estado` (también `/status` y `/descargas`) muestra descargas activas y cola.
 - `/logs`, `/logs bot` y `/logs todos` permiten consultar los logs desde Telegram.
-- Visor gráfico local de logs para macOS mediante `scripts/open-logs-macos.sh`.
+- Dashboard local para macOS con servicios, almacenamiento, historial, cola y logs mediante `scripts/open-logs-macos.sh`.
+- Historial persistente en SQLite de subidas, cuarentenas, descargas y errores.
 - El visor y el watcher de errores arrancan automáticamente mediante LaunchAgents.
-- Los errores nuevos de Organizer y Telegram se notifican automáticamente por Telegram.
+- Los errores nuevos de Organizer y Telegram se notifican automáticamente por Telegram. El watcher detecta `ERROR`/`CRITICAL` del Organizer en `stdout` y también vigila `stderr` de ambos procesos.
 - Incluye LaunchAgents para macOS y un watcher systemd opcional para refrescar Emby en Linux/LXC.
 
 ## Requisitos
@@ -38,7 +40,7 @@ chmod +x scripts/install-macos-services.sh scripts/status-macos.sh
 ./scripts/install-macos-services.sh
 ```
 
-El instalador detecta automáticamente la ubicación del repositorio, crea/reutiliza `~/.venvs/emby-organizer`, instala dependencias, genera los LaunchAgents con las rutas correctas y arranca ambos servicios.
+El instalador detecta automáticamente la ubicación del repositorio, crea/reutiliza `~/.venvs/emby-organizer`, instala dependencias, genera los LaunchAgents con las rutas correctas y arranca los cuatro servicios: Organizer, bot de Telegram, dashboard y watcher de alertas.
 
 Consulta el estado con:
 
@@ -55,14 +57,14 @@ tail -f ~/Library/Logs/emby-organizer.out.log
 tail -f ~/Library/Logs/emby-organizer.err.log
 ```
 
-Visor gráfico local en macOS:
+Dashboard local en macOS:
 
 ```bash
 chmod +x scripts/open-logs-macos.sh
 ./scripts/open-logs-macos.sh
 ```
 
-Abre `http://127.0.0.1:8765` en el navegador y actualiza los cuatro logs automáticamente. Tras ejecutar de nuevo `install-macos-services.sh`, el visor queda arrancado automáticamente al iniciar sesión.
+Abre `http://127.0.0.1:8765` en el navegador. Muestra el estado de los cuatro servicios, espacio de almacenamiento, cola y descargas recientes, historial persistente y los cuatro logs. Tras ejecutar `install-macos-services.sh`, el dashboard queda arrancado automáticamente al iniciar sesión.
 
 ## Telegram
 
@@ -97,6 +99,25 @@ Descarga directa:
 
 El bot intenta obtener `Content-Disposition`, tamaño y soporte de rangos. No fuerza HTTP/1.1: deja que `curl` negocie el protocolo con el servidor.
 
+### Cola persistente e historial
+
+El estado se guarda por defecto en:
+
+```text
+~/.local/share/emby_organizer/state.sqlite3
+```
+
+SQLite conserva las descargas directas pendientes/activas y el historial de actividad. Si el bot o el Mac se reinician, las descargas con estado `queued` o `active` vuelven a la cola y `curl -C -` intenta reanudarlas cuando el servidor lo permite.
+
+El historial registra, entre otros eventos:
+
+- contenido subido correctamente a Emby;
+- archivos enviados a `NoClasificado`;
+- errores del Organizer;
+- descargas directas añadidas, completadas o fallidas.
+
+El dashboard nunca muestra la URL de una descarga directa; únicamente nombre, estado, tamaño e intentos.
+
 ## Variables principales
 
 | Variable | Uso |
@@ -113,6 +134,7 @@ El bot intenta obtener `Content-Disposition`, tamaño y soporte de rangos. No fu
 | `LOG_ALERT_POLL_SECONDS` | Intervalo de comprobación de errores (2 s por defecto) |
 | `LOG_ALERT_DEDUP_SECONDS` | Ventana de deduplicación de alertas iguales (300 s) |
 | `LOG_ALERT_MAX_CHARS` | Máximo de caracteres enviados por alerta (3000) |
+| `EMBY_STATE_DB` | Ruta opcional de la base SQLite; por defecto `~/.local/share/emby_organizer/state.sqlite3` |
 | `EMBY_SFTP_*_URL` | Destinos SFTP por biblioteca |
 | `EMBY_SFTP_PASSWORD` | Opcional; se recomienda clave SSH |
 
@@ -156,6 +178,7 @@ emby-organizer/
 ├── .env.example
 ├── .gitignore
 ├── emby_organizer.py
+├── state_db.py
 ├── requirements.txt
 ├── README.md
 ├── MACOS_MIGRATION.md

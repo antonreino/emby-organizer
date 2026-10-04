@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import hashlib
 import os
+import re
 import time
 from pathlib import Path
 
@@ -18,9 +19,24 @@ MAX_CHARS = int(os.getenv("LOG_ALERT_MAX_CHARS", "3000"))
 
 LOG_DIR = Path.home() / "Library" / "Logs"
 WATCHED = {
-    "Organizer": LOG_DIR / "emby-organizer.err.log",
-    "Telegram bot": LOG_DIR / "telegram-download-bot.err.log",
+    "organizer_stdout": {
+        "label": "Organizer",
+        "path": LOG_DIR / "emby-organizer.out.log",
+        "mode": "logging",
+    },
+    "organizer_stderr": {
+        "label": "Organizer",
+        "path": LOG_DIR / "emby-organizer.err.log",
+        "mode": "raw",
+    },
+    "telegram_stderr": {
+        "label": "Telegram bot",
+        "path": LOG_DIR / "telegram-download-bot.err.log",
+        "mode": "raw",
+    },
 }
+
+LOG_RECORD_RE = re.compile(r"^\d{4}-\d{2}-\d{2} .*? \| ([A-Z]+) \| ")
 
 if not TOKEN:
     raise SystemExit("Falta TELEGRAM_BOT_TOKEN en .env")
@@ -52,10 +68,7 @@ def send_alert(source: str, text: str) -> None:
 
     response = requests.post(
         API,
-        data={
-            "chat_id": CHAT_ID,
-            "text": f"🚨 Error en {source}\n\n{text}",
-        },
+        data={"chat_id": CHAT_ID, "text": f"🚨 Error en {source}\n\n{text}"},
         timeout=15,
     )
     response.raise_for_status()
@@ -68,20 +81,52 @@ def current_size(path: Path) -> int:
         return 0
 
 
+def extract_logging_errors(chunk: str) -> list[str]:
+    """Extrae ERROR/CRITICAL y sus traceback asociados de un StreamHandler."""
+    blocks = []
+    current = []
+    current_is_error = False
+
+    for line in chunk.splitlines():
+        match = LOG_RECORD_RE.match(line)
+        if match:
+            if current and current_is_error:
+                blocks.append("\n".join(current))
+            current = [line]
+            current_is_error = match.group(1) in {"ERROR", "CRITICAL"}
+        elif current:
+            current.append(line)
+        elif line.strip():
+            # Fragmento de traceback partido entre dos lecturas: mejor conservarlo.
+            current = [line]
+            current_is_error = True
+
+    if current and current_is_error:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def messages_for(entry: dict, chunk: str) -> list[str]:
+    if entry["mode"] == "logging":
+        return extract_logging_errors(chunk)
+    chunk = chunk.strip()
+    return [chunk] if chunk else []
+
+
 def main():
-    offsets = {name: current_size(path) for name, path in WATCHED.items()}
+    offsets = {key: current_size(entry["path"]) for key, entry in WATCHED.items()}
     recent = {}
 
     print("Watcher de errores iniciado.", flush=True)
-    for name, path in WATCHED.items():
-        print(f"{name}: {path}", flush=True)
+    for entry in WATCHED.values():
+        print(f"{entry['label']}: {entry['path']} ({entry['mode']})", flush=True)
 
     while True:
-        for name, path in WATCHED.items():
+        for key, entry in WATCHED.items():
+            path = entry["path"]
             try:
                 size = current_size(path)
-                offset = offsets[name]
-
+                offset = offsets[key]
                 if size < offset:
                     offset = 0
 
@@ -89,34 +134,29 @@ def main():
                     with path.open("r", encoding="utf-8", errors="replace") as handle:
                         handle.seek(offset)
                         chunk = handle.read()
-                        offsets[name] = handle.tell()
+                        offsets[key] = handle.tell()
 
-                    chunk = chunk.strip()
-                    if chunk:
+                    for message in messages_for(entry, chunk):
                         fingerprint = hashlib.sha256(
-                            f"{name}\0{chunk}".encode("utf-8", errors="replace")
+                            f"{entry['label']}\0{message}".encode("utf-8", errors="replace")
                         ).hexdigest()
                         now = time.time()
-                        last_sent = recent.get(fingerprint, 0)
-
-                        if now - last_sent >= DEDUP_SECONDS:
+                        if now - recent.get(fingerprint, 0) >= DEDUP_SECONDS:
                             try:
-                                send_alert(name, chunk)
+                                send_alert(entry["label"], message)
                                 recent[fingerprint] = now
-                                print(f"Alerta enviada: {name}", flush=True)
+                                print(f"Alerta enviada: {entry['label']}", flush=True)
                             except Exception as exc:
                                 print(f"Error enviando alerta: {exc}", flush=True)
 
-                # Limpia huellas antiguas para que el diccionario no crezca sin límite.
                 now = time.time()
                 recent = {
-                    key: sent_at
-                    for key, sent_at in recent.items()
+                    fingerprint: sent_at
+                    for fingerprint, sent_at in recent.items()
                     if now - sent_at < DEDUP_SECONDS
                 }
-
             except Exception as exc:
-                print(f"Error vigilando {name}: {exc}", flush=True)
+                print(f"Error vigilando {entry['label']}: {exc}", flush=True)
 
         time.sleep(POLL_SECONDS)
 

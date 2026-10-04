@@ -51,7 +51,7 @@ echo "🤖 Telegram descargas:"
 service_status "com.tone.telegram-download-bot"
 
 echo
-echo "🖥️ Visor de logs:"
+echo "🖥️ Dashboard:"
 service_status "com.tone.emby-log-viewer"
 
 echo

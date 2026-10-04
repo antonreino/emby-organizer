@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import threading
+import sys
 import time
 from collections import deque
 from email.message import Message
@@ -13,6 +14,9 @@ import requests
 from dotenv import load_dotenv
 
 APP_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(APP_DIR))
+from state_db import add_history, create_download, init_db, recover_pending_downloads, update_download
+
 ENV_FILE = APP_DIR / ".env"
 load_dotenv(ENV_FILE)
 
@@ -42,7 +46,6 @@ DOWNLOAD_LOCK = threading.Lock()
 ACTIVE_DOWNLOADS = {}      # job_id -> job dict
 QUEUED_DOWNLOADS = deque() # job dicts
 KNOWN_TARGETS = set()      # target paths active or queued
-NEXT_JOB_ID = 1
 
 
 def tg(method, **params):
@@ -310,6 +313,7 @@ def start_queued_downloads():
             job = QUEUED_DOWNLOADS.popleft()
             job["status"] = "active"
             job["started_at"] = time.time()
+            update_download(job["id"], status="active", started_at=job["started_at"], error=None)
             ACTIVE_DOWNLOADS[job["id"]] = job
             to_start.append(job)
 
@@ -334,6 +338,9 @@ def run_game_download(job: dict):
 
     try:
         if not GAME_DOWNLOAD_DIR.parent.exists():
+            error = f"No está montado el volumen de destino: {GAME_DOWNLOAD_DIR.parent}"
+            update_download(job["id"], status="failed", finished_at=time.time(), error=error)
+            add_history("download", "failed", title=name, destination=str(target), details=error, job_id=job["id"])
             send_message(chat_id, f"❌ No está montado el volumen de destino:\n{GAME_DOWNLOAD_DIR.parent}")
             return
 
@@ -351,6 +358,7 @@ def run_game_download(job: dict):
 
         for attempt in range(1, GAME_MAX_RETRIES + 1):
             job["attempt"] = attempt
+            update_download(job["id"], attempt=attempt)
             cmd = [
                 "/usr/bin/caffeinate",
                 "/usr/bin/curl",
@@ -371,14 +379,25 @@ def run_game_download(job: dict):
             job["pid"] = None
 
             if process.returncode == 0:
+                final_size = file_size(target)
+                update_download(
+                    job["id"], status="completed", finished_at=time.time(),
+                    error=None, size_bytes=final_size,
+                )
+                add_history(
+                    "download", "success", title=name, destination=str(target),
+                    details="Descarga directa completada", size_bytes=final_size,
+                    job_id=job["id"],
+                )
                 send_message(
                     chat_id,
-                    f"✅ Descarga completada #{job['id']}:\n{name}\n📦 {human_size(file_size(target))}",
+                    f"✅ Descarga completada #{job['id']}:\n{name}\n📦 {human_size(final_size)}",
                 )
                 print(f"Descarga completada #{job['id']}: {target}", flush=True)
                 return
 
             error = (stderr or stdout or "Error desconocido").strip()[-500:]
+            update_download(job["id"], error=error, attempt=attempt)
             print(f"Descarga #{job['id']} intento {attempt}/{GAME_MAX_RETRIES} falló: {error}", flush=True)
             send_message(
                 chat_id,
@@ -391,18 +410,30 @@ def run_game_download(job: dict):
             if attempt < GAME_MAX_RETRIES:
                 time.sleep(GAME_RETRY_DELAY)
 
+        final_error = f"Se agotaron los {GAME_MAX_RETRIES} intentos"
+        update_download(job["id"], status="failed", finished_at=time.time(), error=final_error)
+        add_history(
+            "download", "failed", title=name, destination=str(target),
+            details=final_error, size_bytes=file_size(target), job_id=job["id"],
+        )
         send_message(
             chat_id,
             f"❌ DESCARGA FALLIDA #{job['id']}\n\n🎮 {name}\n"
             f"Se agotaron los {GAME_MAX_RETRIES} intentos.",
         )
+    except Exception as exc:
+        update_download(job["id"], status="failed", finished_at=time.time(), error=str(exc))
+        add_history(
+            "download", "failed", title=name, destination=str(target),
+            details=str(exc), size_bytes=file_size(target), job_id=job["id"],
+        )
+        print(f"Error inesperado en descarga #{job['id']}: {exc}", flush=True)
+        send_message(chat_id, f"❌ Error inesperado en descarga #{job['id']}:\n{name}\n{exc}")
     finally:
         finish_job(job)
 
 
 def enqueue_game_download(chat_id, raw_url: str):
-    global NEXT_JOB_ID
-
     url = normalize_url(raw_url)
     if not url.lower().startswith(("http://", "https://")):
         send_message(chat_id, "❌ URL no válida.\nUso: /juego https://...")
@@ -418,8 +449,12 @@ def enqueue_game_download(chat_id, raw_url: str):
             send_message(chat_id, f"⚠️ Esa descarga ya está activa o en cola:\n{name}")
             return
 
-        job_id = NEXT_JOB_ID
-        NEXT_JOB_ID += 1
+        queued_at = time.time()
+        job_id = create_download(
+            chat_id=str(chat_id), url=url, name=name, target=str(target),
+            size_bytes=probe.get("size"), resume_supported=probe.get("resume"),
+            queued_at=queued_at,
+        )
         job = {
             "id": job_id,
             "chat_id": chat_id,
@@ -429,7 +464,7 @@ def enqueue_game_download(chat_id, raw_url: str):
             "size": probe.get("size"),
             "resume": probe.get("resume"),
             "probe_error": probe.get("probe_error"),
-            "queued_at": time.time(),
+            "queued_at": queued_at,
             "started_at": None,
             "attempt": 0,
             "pid": None,
@@ -440,12 +475,50 @@ def enqueue_game_download(chat_id, raw_url: str):
         position = len(QUEUED_DOWNLOADS)
         can_start_now = len(ACTIVE_DOWNLOADS) < GAME_MAX_CONCURRENT
 
+    add_history(
+        "download", "queued", title=name, destination=str(target),
+        details="Descarga añadida a la cola", size_bytes=probe.get("size"),
+        job_id=job_id,
+    )
+
     if can_start_now:
         send_message(chat_id, f"🆕 Descarga añadida #{job_id}:\n{name}\n▶️ Preparando inicio...")
     else:
         send_message(chat_id, f"🕒 Descarga en cola #{job_id}:\n{name}\n📋 Posición: {position}")
 
     start_queued_downloads()
+
+
+def restore_persistent_queue():
+    recovered = recover_pending_downloads()
+    if not recovered:
+        return 0
+
+    with DOWNLOAD_LOCK:
+        for row in recovered:
+            target = Path(row["target"])
+            key = str(target)
+            if key in KNOWN_TARGETS:
+                continue
+            job = {
+                "id": row["id"],
+                "chat_id": row["chat_id"],
+                "url": row["url"],
+                "name": row["name"],
+                "target": target,
+                "size": row["size_bytes"],
+                "resume": row["resume_supported"],
+                "probe_error": None,
+                "queued_at": row["queued_at"],
+                "started_at": None,
+                "attempt": row["attempt"] or 0,
+                "pid": None,
+                "status": "queued",
+            }
+            KNOWN_TARGETS.add(key)
+            QUEUED_DOWNLOADS.append(job)
+
+    return len(recovered)
 
 
 def downloads_status(chat_id):
@@ -554,11 +627,16 @@ def handle_message(msg):
 
 
 def main():
+    init_db()
     TORRENT_DROP_DIR.mkdir(parents=True, exist_ok=True)
+    recovered = restore_persistent_queue()
     print("Bot Telegram iniciado.", flush=True)
     print(f"Torrents -> {TORRENT_DROP_DIR}", flush=True)
     print(f"/juego -> {GAME_DOWNLOAD_DIR}", flush=True)
     print(f"Descargas simultáneas -> {GAME_MAX_CONCURRENT}", flush=True)
+    if recovered:
+        print(f"Cola persistente recuperada -> {recovered}", flush=True)
+        start_queued_downloads()
 
     offset = None
     while True:
