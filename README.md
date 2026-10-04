@@ -13,6 +13,10 @@ Automatización personal para organizar películas, series y anime, moverlos por
 - `/juego URL` realiza descargas directas con `curl`, reanudación y reintentos.
 - Hasta `GAME_MAX_CONCURRENT` descargas directas simultáneas; el resto queda en cola.
 - `/estado` (también `/status` y `/descargas`) muestra descargas activas y cola.
+- `/logs`, `/logs bot` y `/logs todos` permiten consultar los logs desde Telegram.
+- Visor gráfico local de logs para macOS mediante `scripts/open-logs-macos.sh`.
+- El visor y el watcher de errores arrancan automáticamente mediante LaunchAgents.
+- Los errores nuevos de Organizer y Telegram se notifican automáticamente por Telegram.
 - Incluye LaunchAgents para macOS y un watcher systemd opcional para refrescar Emby en Linux/LXC.
 
 ## Requisitos
@@ -51,6 +55,15 @@ tail -f ~/Library/Logs/emby-organizer.out.log
 tail -f ~/Library/Logs/emby-organizer.err.log
 ```
 
+Visor gráfico local en macOS:
+
+```bash
+chmod +x scripts/open-logs-macos.sh
+./scripts/open-logs-macos.sh
+```
+
+Abre `http://127.0.0.1:8765` en el navegador y actualiza los cuatro logs automáticamente. Tras ejecutar de nuevo `install-macos-services.sh`, el visor queda arrancado automáticamente al iniciar sesión.
+
 ## Telegram
 
 Comandos:
@@ -60,6 +73,9 @@ Comandos:
 /ping
 /juego https://servidor/archivo
 /estado
+/logs
+/logs bot
+/logs todos
 ```
 
 Los `.torrent` pueden enviarse directamente como documentos. El bot solo acepta el chat configurado mediante `TELEGRAM_CHAT_ID`; si falta esa variable, no arranca.
@@ -93,6 +109,10 @@ El bot intenta obtener `Content-Disposition`, tamaño y soporte de rangos. No fu
 | `GAME_DOWNLOAD_DIR` | Descargas de `/juego` |
 | `GAME_MAX_CONCURRENT` | Descargas simultáneas (2 por defecto) |
 | `GAME_MAX_RETRIES` | Reintentos por descarga |
+| `TELEGRAM_LOG_LINES` | Líneas de log devueltas por Telegram (30 por defecto) |
+| `LOG_ALERT_POLL_SECONDS` | Intervalo de comprobación de errores (2 s por defecto) |
+| `LOG_ALERT_DEDUP_SECONDS` | Ventana de deduplicación de alertas iguales (300 s) |
+| `LOG_ALERT_MAX_CHARS` | Máximo de caracteres enviados por alerta (3000) |
 | `EMBY_SFTP_*_URL` | Destinos SFTP por biblioteca |
 | `EMBY_SFTP_PASSWORD` | Opcional; se recomienda clave SSH |
 
@@ -141,10 +161,15 @@ emby-organizer/
 ├── MACOS_MIGRATION.md
 ├── launchd/
 │   ├── com.tone.emby-organizer.plist.template
-│   └── com.tone.telegram-download-bot.plist.template
+│   ├── com.tone.telegram-download-bot.plist.template
+│   ├── com.tone.emby-log-viewer.plist.template
+│   └── com.tone.emby-log-alerts.plist.template
 ├── scripts/
 │   ├── emby-watch-refresh.sh
 │   ├── install-macos-services.sh
+│   ├── log-viewer.py
+│   ├── log-error-watcher.py
+│   ├── open-logs-macos.sh
 │   ├── status-macos.sh
 │   └── telegram_torrent_bot.py
 └── systemd/

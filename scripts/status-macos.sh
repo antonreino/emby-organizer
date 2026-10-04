@@ -51,6 +51,14 @@ echo "🤖 Telegram descargas:"
 service_status "com.tone.telegram-download-bot"
 
 echo
+echo "🖥️ Visor de logs:"
+service_status "com.tone.emby-log-viewer"
+
+echo
+echo "🚨 Alertas de errores:"
+service_status "com.tone.emby-log-alerts"
+
+echo
 echo "📁 Media: $INBOX_DIR"
 echo "🧲 .torrent: $TORRENT_DROP_DIR"
 echo "🎮 /juego: $GAME_DOWNLOAD_DIR"

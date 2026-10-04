@@ -23,6 +23,13 @@ GAME_DOWNLOAD_DIR = Path(os.getenv("GAME_DOWNLOAD_DIR", str(Path.home() / "Downl
 GAME_MAX_RETRIES = int(os.getenv("GAME_MAX_RETRIES", "20"))
 GAME_RETRY_DELAY = int(os.getenv("GAME_RETRY_DELAY", "5"))
 GAME_MAX_CONCURRENT = int(os.getenv("GAME_MAX_CONCURRENT", "2"))
+TELEGRAM_LOG_LINES = int(os.getenv("TELEGRAM_LOG_LINES", "30"))
+
+LOG_DIR = Path.home() / "Library" / "Logs"
+ORGANIZER_OUT_LOG = LOG_DIR / "emby-organizer.out.log"
+ORGANIZER_ERR_LOG = LOG_DIR / "emby-organizer.err.log"
+BOT_OUT_LOG = LOG_DIR / "telegram-download-bot.out.log"
+BOT_ERR_LOG = LOG_DIR / "telegram-download-bot.err.log"
 
 if not TOKEN:
     raise SystemExit("Falta TELEGRAM_BOT_TOKEN en .env")
@@ -60,6 +67,55 @@ def send_message(chat_id, text):
 
 def is_allowed(chat_id):
     return str(chat_id) == str(ALLOWED_CHAT_ID)
+
+
+def redact_secrets(text: str) -> str:
+    secrets = [
+        TOKEN,
+        os.getenv("EMBY_SFTP_PASSWORD", ""),
+        os.getenv("TMDB_API_KEY", ""),
+        os.getenv("EMBY_API_KEY", ""),
+    ]
+    for secret in secrets:
+        if secret and len(secret) >= 6:
+            text = text.replace(secret, "[REDACTADO]")
+    return text
+
+
+def tail_log(path: Path, lines: int = TELEGRAM_LOG_LINES) -> str:
+    if not path.exists():
+        return "(sin archivo de log)"
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            tail = deque(handle, maxlen=max(1, lines))
+        text = "".join(tail).strip()
+        return redact_secrets(text) if text else "(vacío)"
+    except Exception as exc:
+        return f"(error leyendo {path.name}: {exc})"
+
+
+def logs_message(target: str = "organizer") -> str:
+    target = (target or "organizer").lower().strip()
+    if target in ("organizer", "organizador", "emby"):
+        sections = [("🎬 Organizer", ORGANIZER_OUT_LOG), ("🚨 Organizer errores", ORGANIZER_ERR_LOG)]
+    elif target in ("bot", "telegram"):
+        sections = [("🤖 Telegram bot", BOT_OUT_LOG), ("🚨 Telegram errores", BOT_ERR_LOG)]
+    elif target in ("todos", "all"):
+        sections = [
+            ("🎬 Organizer", ORGANIZER_OUT_LOG), ("🚨 Organizer errores", ORGANIZER_ERR_LOG),
+            ("🤖 Telegram bot", BOT_OUT_LOG), ("🚨 Telegram errores", BOT_ERR_LOG),
+        ]
+    else:
+        return "Uso: /logs, /logs bot o /logs todos"
+
+    chunks = [f"📋 Últimas {TELEGRAM_LOG_LINES} líneas"]
+    for title, path in sections:
+        chunks.append(f"\n{title}\n{tail_log(path)}")
+    message = "\n".join(chunks)
+    if len(message) > 3900:
+        message = "… salida recortada …\n" + message[-3875:]
+    return message
+
 
 def is_torrent_bytes(path: Path) -> bool:
     try:
@@ -441,6 +497,9 @@ def handle_message(msg):
             "• /juego URL añade una descarga directa.\n"
             f"• Máximo {GAME_MAX_CONCURRENT} descargas simultáneas; el resto queda en cola.\n"
             "• /estado muestra progreso y cola.\n"
+            "• /logs muestra los logs del Organizer.\n"
+            "• /logs bot muestra los logs del bot.\n"
+            "• /logs todos muestra ambos.\n"
             "• /ping comprueba que el bot responde.",
         )
         return
@@ -451,6 +510,12 @@ def handle_message(msg):
 
     if text in ("/estado", "/status", "/descargas"):
         downloads_status(chat_id)
+        return
+
+    if text == "/logs" or text.startswith("/logs "):
+        parts = text.split(maxsplit=1)
+        target = parts[1] if len(parts) == 2 else "organizer"
+        send_message(chat_id, logs_message(target))
         return
 
     if text.startswith("/juego"):

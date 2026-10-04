@@ -58,14 +58,27 @@ render_plist "$PROJECT_ROOT/launchd/com.tone.emby-organizer.plist.template" \
   "$LAUNCH_AGENTS/com.tone.emby-organizer.plist"
 render_plist "$PROJECT_ROOT/launchd/com.tone.telegram-download-bot.plist.template" \
   "$LAUNCH_AGENTS/com.tone.telegram-download-bot.plist"
+render_plist "$PROJECT_ROOT/launchd/com.tone.emby-log-viewer.plist.template" \
+  "$LAUNCH_AGENTS/com.tone.emby-log-viewer.plist"
+render_plist "$PROJECT_ROOT/launchd/com.tone.emby-log-alerts.plist.template" \
+  "$LAUNCH_AGENTS/com.tone.emby-log-alerts.plist"
 
-for label in com.tone.emby-organizer com.tone.telegram-download-bot; do
+for label in \
+  com.tone.emby-organizer \
+  com.tone.telegram-download-bot \
+  com.tone.emby-log-viewer \
+  com.tone.emby-log-alerts
+do
   launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
 done
 
 launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENTS/com.tone.emby-organizer.plist"
 launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENTS/com.tone.telegram-download-bot.plist"
+launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENTS/com.tone.emby-log-viewer.plist"
+launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENTS/com.tone.emby-log-alerts.plist"
 
 echo "✅ Servicios instalados y arrancados."
-echo "   Organizer: launchctl print gui/$(id -u)/com.tone.emby-organizer"
-echo "   Telegram:  launchctl print gui/$(id -u)/com.tone.telegram-download-bot"
+echo "   Organizer:  launchctl print gui/$(id -u)/com.tone.emby-organizer"
+echo "   Telegram:   launchctl print gui/$(id -u)/com.tone.telegram-download-bot"
+echo "   Log viewer: launchctl print gui/$(id -u)/com.tone.emby-log-viewer"
+echo "   Log alerts: launchctl print gui/$(id -u)/com.tone.emby-log-alerts"
