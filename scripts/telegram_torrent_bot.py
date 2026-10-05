@@ -6,6 +6,7 @@ import threading
 import sys
 import time
 from collections import deque
+from datetime import datetime
 from email.message import Message
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -48,6 +49,11 @@ QUEUED_DOWNLOADS = deque() # job dicts
 KNOWN_TARGETS = set()      # target paths active or queued
 
 
+def log(message: str) -> None:
+    stamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{stamp} | {message}", flush=True)
+
+
 def tg(method, **params):
     r = requests.get(f"{API}/{method}", params=params, timeout=60)
     r.raise_for_status()
@@ -65,7 +71,7 @@ def send_message(chat_id, text):
             timeout=15,
         ).raise_for_status()
     except Exception as exc:
-        print(f"Error enviando mensaje Telegram: {exc}", flush=True)
+        log(f"Error enviando mensaje Telegram: {exc}")
 
 
 def is_allowed(chat_id):
@@ -354,7 +360,7 @@ def run_game_download(job: dict):
         if job.get("probe_error"):
             start_text += "\n⚠️ No pude leer todas las cabeceras; curl lo intentará igualmente."
         send_message(chat_id, start_text)
-        print(f"Juego #{job['id']}: {name}\nDestino: {target}", flush=True)
+        log(f"Juego #{job['id']}: {name} | Destino: {target}")
 
         for attempt in range(1, GAME_MAX_RETRIES + 1):
             job["attempt"] = attempt
@@ -393,12 +399,12 @@ def run_game_download(job: dict):
                     chat_id,
                     f"✅ Descarga completada #{job['id']}:\n{name}\n📦 {human_size(final_size)}",
                 )
-                print(f"Descarga completada #{job['id']}: {target}", flush=True)
+                log(f"Descarga completada #{job['id']}: {target}")
                 return
 
             error = (stderr or stdout or "Error desconocido").strip()[-500:]
             update_download(job["id"], error=error, attempt=attempt)
-            print(f"Descarga #{job['id']} intento {attempt}/{GAME_MAX_RETRIES} falló: {error}", flush=True)
+            log(f"Descarga #{job['id']} intento {attempt}/{GAME_MAX_RETRIES} falló: {error}")
             send_message(
                 chat_id,
                 f"⚠️ Descarga interrumpida #{job['id']}\n\n🎮 {name}\n"
@@ -427,7 +433,7 @@ def run_game_download(job: dict):
             "download", "failed", title=name, destination=str(target),
             details=str(exc), size_bytes=file_size(target), job_id=job["id"],
         )
-        print(f"Error inesperado en descarga #{job['id']}: {exc}", flush=True)
+        log(f"Error inesperado en descarga #{job['id']}: {exc}")
         send_message(chat_id, f"❌ Error inesperado en descarga #{job['id']}:\n{name}\n{exc}")
     finally:
         finish_job(job)
@@ -557,7 +563,7 @@ def handle_message(msg):
 
     if not is_allowed(chat_id):
         send_message(chat_id, "⛔ Chat no autorizado.")
-        print(f"Chat no autorizado: {chat_id}", flush=True)
+        log(f"Chat no autorizado: {chat_id}")
         return
 
     text = (msg.get("text") or "").strip()
@@ -609,33 +615,33 @@ def handle_message(msg):
         send_message(chat_id, "❌ No pude leer el archivo.")
         return
 
-    print(f"Recibido documento: {filename}", flush=True)
+    log(f"Recibido documento: {filename}")
     try:
         target, rejected = download_torrent_file(file_id, filename)
     except Exception as exc:
         send_message(chat_id, f"❌ Error descargando archivo: {exc}")
-        print(f"Error descargando archivo: {exc}", flush=True)
+        log(f"Error descargando archivo: {exc}")
         return
 
     if rejected:
         send_message(chat_id, f"⚠️ Archivo rechazado, no parece torrent: {rejected.name}")
-        print(f"Archivo rechazado: {rejected}", flush=True)
+        log(f"Archivo rechazado: {rejected}")
         return
 
     send_message(chat_id, f"✅ Torrent recibido:\n{target.name}\n📁 {target.parent}")
-    print(f"Torrent guardado: {target}", flush=True)
+    log(f"Torrent guardado: {target}")
 
 
 def main():
     init_db()
     TORRENT_DROP_DIR.mkdir(parents=True, exist_ok=True)
     recovered = restore_persistent_queue()
-    print("Bot Telegram iniciado.", flush=True)
-    print(f"Torrents -> {TORRENT_DROP_DIR}", flush=True)
-    print(f"/juego -> {GAME_DOWNLOAD_DIR}", flush=True)
-    print(f"Descargas simultáneas -> {GAME_MAX_CONCURRENT}", flush=True)
+    log("Bot Telegram iniciado.")
+    log(f"Torrents -> {TORRENT_DROP_DIR}")
+    log(f"/juego -> {GAME_DOWNLOAD_DIR}")
+    log(f"Descargas simultáneas -> {GAME_MAX_CONCURRENT}")
     if recovered:
-        print(f"Cola persistente recuperada -> {recovered}", flush=True)
+        log(f"Cola persistente recuperada -> {recovered}")
         start_queued_downloads()
 
     offset = None
@@ -652,7 +658,7 @@ def main():
                 if msg:
                     handle_message(msg)
         except Exception as exc:
-            print(f"Error loop Telegram: {exc}", flush=True)
+            log(f"Error loop Telegram: {exc}")
             time.sleep(5)
 
 

@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,8 @@ SERVICES = {
     "viewer": "com.tone.emby-log-viewer",
     "alerts": "com.tone.emby-log-alerts",
 }
+
+LOG_TS_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}:\d{2})(?:,\d+)?(?P<rest>.*)$")
 
 HTML = r'''<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -69,12 +72,29 @@ const linesEl=document.getElementById('lines');linesEl.addEventListener('change'
 </script></body></html>'''
 
 
+def format_log_timestamps(text: str) -> str:
+    result = []
+    last_stamp = None
+    for line in text.splitlines():
+        match = LOG_TS_RE.match(line)
+        if match:
+            year, month, day = match.group("date").split("-")
+            last_stamp = f"{day}/{month}/{year} {match.group('time')}"
+            result.append(f"{last_stamp}{match.group('rest')}")
+        elif last_stamp and line.strip():
+            result.append(f"{last_stamp} | {line}")
+        else:
+            result.append(line)
+    return "\n".join(result)
+
+
 def tail(path: Path, lines: int) -> str:
     if not path.exists():
         return "(sin archivo de log)"
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
-            return "".join(deque(handle, maxlen=lines)).strip()
+            raw = "".join(deque(handle, maxlen=lines)).strip()
+        return format_log_timestamps(raw)
     except Exception as exc:
         return f"(error leyendo {path.name}: {exc})"
 

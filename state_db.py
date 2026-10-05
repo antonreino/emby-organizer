@@ -3,6 +3,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -39,7 +40,7 @@ def _initialize_once() -> None:
     last_error = None
     for attempt in range(1, DB_INIT_RETRIES + 1):
         try:
-            with connect() as conn:
+            with closing(connect()) as conn, conn:
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.executescript(
@@ -118,7 +119,7 @@ def add_history(
     job_id: int | None = None,
 ) -> int:
     init_db()
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         cur = conn.execute(
             """
             INSERT INTO history (
@@ -147,7 +148,7 @@ def create_download(
     init_db()
     now = utc_now()
     resume_value = None if resume_supported is None else int(resume_supported)
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         cur = conn.execute(
             """
             INSERT INTO downloads (
@@ -173,13 +174,13 @@ def update_download(job_id: int, **fields: Any) -> None:
     clean["updated_at"] = utc_now()
     assignments = ", ".join(f"{key} = ?" for key in clean)
     values = list(clean.values()) + [job_id]
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         conn.execute(f"UPDATE downloads SET {assignments} WHERE id = ?", values)
 
 
 def recover_pending_downloads() -> list[dict[str, Any]]:
     init_db()
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         rows = conn.execute(
             """
             SELECT * FROM downloads
@@ -210,7 +211,7 @@ def recover_pending_downloads() -> list[dict[str, Any]]:
 def recent_history(limit: int = 30) -> list[dict[str, Any]]:
     init_db()
     limit = max(1, min(int(limit), 500))
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         rows = conn.execute(
             "SELECT * FROM history ORDER BY id DESC LIMIT ?",
             (limit,),
@@ -221,7 +222,7 @@ def recent_history(limit: int = 30) -> list[dict[str, Any]]:
 def recent_downloads(limit: int = 20) -> list[dict[str, Any]]:
     init_db()
     limit = max(1, min(int(limit), 500))
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         rows = conn.execute(
             """
             SELECT id, created_at, updated_at, name, target, size_bytes,
@@ -237,7 +238,7 @@ def recent_downloads(limit: int = 20) -> list[dict[str, Any]]:
 
 def dashboard_summary() -> dict[str, Any]:
     init_db()
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         counts = {
             row["status"]: row["count"]
             for row in conn.execute(
