@@ -3,17 +3,14 @@ import argparse
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
-import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-import paramiko
 from dotenv import load_dotenv
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -24,14 +21,6 @@ load_dotenv(APP_DIR / ".env")
 
 LOG_DIR = Path.home() / "Library" / "Logs"
 GAME_DOWNLOAD_DIR = Path(os.getenv("GAME_DOWNLOAD_DIR", str(Path.home() / "Downloads" / "Games"))).expanduser()
-EMBY_SFTP_URLS = [
-    os.getenv("EMBY_SFTP_MOVIES_URL", ""),
-    os.getenv("EMBY_SFTP_SERIES_URL", ""),
-    os.getenv("EMBY_SFTP_ANIME_URL", ""),
-]
-EMBY_SFTP_PASSWORD = os.getenv("EMBY_SFTP_PASSWORD") or None
-_EMBY_DISK_CACHE = {"at": 0.0, "data": None}
-_EMBY_DISK_CACHE_SECONDS = 60.0
 LOGS = {
     "organizer_out": LOG_DIR / "emby-organizer.out.log",
     "organizer_err": LOG_DIR / "emby-organizer.err.log",
@@ -791,94 +780,6 @@ def download_progress(rows: list[dict]) -> list[dict]:
         result.append(item)
     return result
 
-
-
-def emby_disk_info() -> dict:
-    """Consulta el filesystem remoto de Emby mediante la misma conexión SSH/SFTP."""
-    now = time.monotonic()
-    cached = _EMBY_DISK_CACHE.get("data")
-    if cached is not None and now - float(_EMBY_DISK_CACHE.get("at", 0)) < _EMBY_DISK_CACHE_SECONDS:
-        return cached
-
-    raw_url = next((url for url in EMBY_SFTP_URLS if url), "")
-    if not raw_url:
-        data = {"available": False, "error": "SFTP de Emby no configurado"}
-        _EMBY_DISK_CACHE.update(at=now, data=data)
-        return data
-
-    parsed = urlparse(raw_url)
-    if not parsed.hostname or not parsed.username or not parsed.path:
-        data = {"available": False, "error": "Configuración SFTP incompleta"}
-        _EMBY_DISK_CACHE.update(at=now, data=data)
-        return data
-
-    transport = None
-    last_error = None
-    try:
-        for key_path in (Path.home() / ".ssh" / "id_ed25519", Path.home() / ".ssh" / "id_rsa"):
-            if not key_path.exists():
-                continue
-            candidate = paramiko.Transport((parsed.hostname, parsed.port or 22))
-            try:
-                if key_path.name == "id_ed25519":
-                    pkey = paramiko.Ed25519Key.from_private_key_file(str(key_path))
-                else:
-                    pkey = paramiko.RSAKey.from_private_key_file(str(key_path))
-                candidate.connect(username=parsed.username, pkey=pkey)
-                transport = candidate
-                break
-            except Exception as exc:
-                last_error = exc
-                candidate.close()
-
-        if transport is None and EMBY_SFTP_PASSWORD:
-            transport = paramiko.Transport((parsed.hostname, parsed.port or 22))
-            transport.connect(username=parsed.username, password=EMBY_SFTP_PASSWORD)
-
-        if transport is None:
-            raise RuntimeError(last_error or "No hay credenciales SSH no interactivas disponibles")
-
-        channel = transport.open_session(timeout=6)
-        channel.exec_command(f"df -Pk {shlex.quote(parsed.path)}")
-        stdout = channel.makefile("r", -1).read()
-        stderr = channel.makefile_stderr("r", -1).read()
-        status = channel.recv_exit_status()
-        channel.close()
-
-        if status != 0:
-            raise RuntimeError(stderr.strip() or f"df terminó con código {status}")
-
-        lines = [line for line in stdout.splitlines() if line.strip()]
-        if len(lines) < 2:
-            raise RuntimeError("Respuesta de df incompleta")
-
-        parts = lines[-1].split()
-        if len(parts) < 6:
-            raise RuntimeError("Formato de df no reconocido")
-
-        total = int(parts[1]) * 1024
-        used = int(parts[2]) * 1024
-        free = int(parts[3]) * 1024
-
-        data = {
-            "available": True,
-            "path": parsed.path,
-            "total": total,
-            "used": used,
-            "free": free,
-            "used_percent": round((used * 100 / total), 1) if total else 0.0,
-        }
-    except Exception as exc:
-        data = {"available": False, "error": str(exc)}
-    finally:
-        if transport is not None:
-            try:
-                transport.close()
-            except Exception:
-                pass
-
-    _EMBY_DISK_CACHE.update(at=now, data=data)
-    return data
 
 
 def disk_info(path: Path) -> dict:

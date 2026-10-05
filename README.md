@@ -1,161 +1,362 @@
 # 🎬 Emby Organizer
 
-Automatización personal para organizar películas, series y anime, moverlos por SFTP a una biblioteca Emby y gestionar descargas desde Telegram.
+Automatización personal para macOS que organiza contenido multimedia, lo envía por SFTP a un servidor Emby y gestiona descargas directas y archivos `.torrent` desde Telegram.
 
-## Funciones
+El proyecto incluye un dashboard web local con estado de servicios, progreso de descargas, almacenamiento local y remoto, historial persistente, estadísticas y logs en tiempo real.
 
-- Vigila `INBOX_DIR` y espera a que los archivos sean estables antes de procesarlos.
-- Clasifica películas, series y anime y normaliza sus nombres.
-- Consulta TMDb de forma opcional para mejorar metadatos.
-- Sube el contenido a las bibliotecas remotas mediante SFTP.
+## Funciones principales
+
+### Organizer
+
+- Vigila `INBOX_DIR` y procesa archivos cuando llevan el tiempo suficiente estables.
+- Clasifica películas, series y anime.
+- Normaliza títulos y nombres de episodios.
+- Consulta TMDb de forma opcional para mejorar la clasificación.
+- Sube el contenido al servidor Emby mediante SFTP.
+- Elimina el archivo local después de una subida correcta.
+- Envía archivos no clasificables a `NoClasificado`.
+- Registra subidas, errores y cuarentenas en SQLite.
 - Envía notificaciones por Telegram.
-- Recibe archivos `.torrent` por Telegram.
-- `/juego URL` realiza descargas directas con `curl`, reanudación y reintentos.
-- Hasta `GAME_MAX_CONCURRENT` descargas directas simultáneas; el resto queda en cola.
-- La cola de `/juego` se guarda en SQLite y se recupera automáticamente tras reinicios.
-- `/estado` (también `/status` y `/descargas`) muestra descargas activas y cola.
-- `/logs`, `/logs bot` y `/logs todos` permiten consultar los logs desde Telegram.
-- Dashboard local para macOS con servicios, almacenamiento, historial, cola y logs mediante `scripts/open-logs-macos.sh`.
-- Historial persistente en SQLite de subidas, cuarentenas, descargas y errores.
-- El visor y el watcher de errores arrancan automáticamente mediante LaunchAgents.
-- Los errores nuevos de Organizer y Telegram se notifican automáticamente por Telegram. El watcher detecta `ERROR`/`CRITICAL` del Organizer en `stdout` y también vigila `stderr` de ambos procesos.
-- Incluye LaunchAgents para macOS y un watcher systemd opcional para refrescar Emby en Linux/LXC.
+- Actualiza periódicamente el espacio disponible del servidor Emby y guarda el último dato válido en SQLite.
+
+### Telegram
+
+El bot acepta:
+
+```text
+/help
+/ping
+/juego URL
+/estado
+/status
+/descargas
+/logs
+/logs bot
+/logs todos
+```
+
+También acepta archivos `.torrent` enviados como documentos.
+
+`/juego URL`:
+
+- descarga mediante `curl`;
+- soporta redirecciones;
+- intenta reanudar descargas con `curl -C -`;
+- realiza reintentos automáticos;
+- admite varias descargas simultáneas;
+- mantiene una cola persistente en SQLite;
+- recupera descargas pendientes después de un reinicio;
+- informa del progreso desde Telegram;
+- nunca registra la URL firmada de la descarga en los logs.
+
+### Dashboard
+
+Disponible por defecto en:
+
+```text
+http://127.0.0.1:8765
+```
+
+Incluye:
+
+- estado de Organizer, bot de Telegram, dashboard y watcher de alertas;
+- resumen de las últimas 24 horas;
+- GB descargados en las últimas 24 horas;
+- GB movidos a Emby en las últimas 24 horas;
+- cola y descargas recientes;
+- porcentaje de progreso de cada descarga;
+- almacenamiento local de descargas;
+- almacenamiento del servidor Emby;
+- historial reciente;
+- logs de Organizer y Telegram;
+- acceso directo al repositorio de GitHub;
+- interfaz responsive y en castellano.
+
+El selector de líneas permite mostrar:
+
+```text
+100
+300
+1000
+```
+
+líneas de log.
+
+## Estadísticas
+
+La pestaña **Estadísticas** muestra datos acumulados desde que se activó el historial SQLite:
+
+- total descargado;
+- total movido a Emby;
+- total de datos gestionados;
+- número de descargas completadas;
+- número de archivos enviados a Emby;
+- estadísticas de las últimas 24 horas;
+- estadísticas de los últimos 7 días;
+- estadísticas de los últimos 30 días;
+- total histórico;
+- desglose por biblioteca: Anime, Series y Películas.
+
+Los valores históricos solo incluyen eventos registrados desde que existe la base SQLite. No se reconstruyen datos anteriores.
+
+## Almacenamiento de Emby
+
+El Organizer consulta periódicamente el espacio del servidor remoto usando la misma conexión SFTP utilizada para subir contenido.
+
+El flujo es:
+
+```text
+Servidor Emby
+     │
+     │ SFTP
+     ▼
+Organizer
+     │
+     │ guarda snapshot
+     ▼
+SQLite
+     │
+     ▼
+Dashboard
+```
+
+El dashboard no necesita conectarse directamente por SSH/SFTP al servidor Emby.
+
+Esto permite:
+
+- evitar conexiones remotas cada pocos segundos;
+- reducir carga;
+- evitar problemas de red de procesos `launchd`;
+- conservar el último dato válido si Emby no responde temporalmente.
+
+Por defecto, el Organizer actualiza el almacenamiento remoto cada:
+
+```text
+300 segundos
+```
+
+mediante:
+
+```dotenv
+EMBY_STORAGE_REFRESH_SECONDS=300
+```
+
+Si una actualización falla, el dashboard conserva el último dato correcto y lo marca como último valor válido.
+
+## Persistencia SQLite
+
+Por defecto:
+
+```text
+~/.local/share/emby_organizer/state.sqlite3
+```
+
+SQLite almacena:
+
+- historial de actividad;
+- descargas directas;
+- cola persistente;
+- estados de descargas;
+- tamaño de archivos;
+- errores;
+- estadísticas;
+- último estado conocido del almacenamiento Emby.
+
+La base se ejecuta en modo WAL y utiliza `busy_timeout` para reducir problemas cuando Organizer, Telegram y Dashboard acceden simultáneamente.
+
+## Flujo multimedia
+
+```text
+Telegram (.torrent)
+        │
+        ▼
+TORRENT_DROP_DIR
+        │
+        ▼
+qBittorrent
+        │
+        ▼
+INBOX_DIR
+        │
+        ▼
+Emby Organizer
+        │
+       SFTP
+        ▼
+Servidor Emby
+```
+
+Descarga directa:
+
+```text
+Telegram
+  │
+  └── /juego URL
+          │
+          ▼
+        curl
+          │
+          ▼
+GAME_DOWNLOAD_DIR
+```
 
 ## Requisitos
 
 - Python 3.10+
-- `curl` y, en macOS, `caffeinate`
-- Acceso SSH/SFTP al servidor de Emby
-- Bot de Telegram para las funciones de Telegram
+- macOS para los LaunchAgents incluidos
+- `curl`
+- `caffeinate`
+- acceso SSH/SFTP al servidor Emby
+- bot de Telegram
 - TMDb opcional
+
+Dependencias Python:
+
+```text
+paramiko
+python-dotenv
+requests
+```
 
 ## Instalación en macOS
 
 ```bash
 git clone https://github.com/antonreino/emby-organizer.git
 cd emby-organizer
+
 cp .env.example .env
-# Edita .env con tus datos reales
-chmod +x scripts/install-macos-services.sh scripts/status-macos.sh
+```
+
+Edita `.env` con tus datos reales.
+
+Después:
+
+```bash
+chmod +x scripts/install-macos-services.sh
+chmod +x scripts/status-macos.sh
+chmod +x scripts/open-logs-macos.sh
+
 ./scripts/install-macos-services.sh
 ```
 
-El instalador detecta automáticamente la ubicación del repositorio, crea/reutiliza `~/.venvs/emby-organizer`, instala dependencias, genera los LaunchAgents con las rutas correctas y arranca los cuatro servicios: Organizer, bot de Telegram, dashboard y watcher de alertas.
+El instalador:
 
-Consulta el estado con:
+- crea o reutiliza `~/.venvs/emby-organizer`;
+- instala las dependencias;
+- genera los LaunchAgents;
+- configura las rutas reales del repositorio;
+- arranca los cuatro servicios.
+
+## Servicios macOS
+
+Se instalan cuatro LaunchAgents:
+
+```text
+com.tone.emby-organizer
+com.tone.telegram-download-bot
+com.tone.emby-log-viewer
+com.tone.emby-log-alerts
+```
+
+Consultar estado:
 
 ```bash
 ./scripts/status-macos.sh
 ```
 
-Logs:
+Reiniciar manualmente:
 
 ```bash
-tail -f ~/Library/Logs/telegram-download-bot.out.log
-tail -f ~/Library/Logs/telegram-download-bot.err.log
+launchctl kickstart -k gui/$(id -u)/com.tone.emby-organizer
+launchctl kickstart -k gui/$(id -u)/com.tone.telegram-download-bot
+launchctl kickstart -k gui/$(id -u)/com.tone.emby-log-viewer
+launchctl kickstart -k gui/$(id -u)/com.tone.emby-log-alerts
+```
+
+## Logs
+
+```bash
 tail -f ~/Library/Logs/emby-organizer.out.log
 tail -f ~/Library/Logs/emby-organizer.err.log
+
+tail -f ~/Library/Logs/telegram-download-bot.out.log
+tail -f ~/Library/Logs/telegram-download-bot.err.log
+
+tail -f ~/Library/Logs/emby-log-viewer.out.log
+tail -f ~/Library/Logs/emby-log-viewer.err.log
 ```
 
-Dashboard local en macOS:
-
-```bash
-chmod +x scripts/open-logs-macos.sh
-./scripts/open-logs-macos.sh
-```
-
-Abre `http://127.0.0.1:8765` en el navegador. Muestra el estado de los cuatro servicios, espacio de almacenamiento, cola y descargas recientes, historial persistente y los cuatro logs. Tras ejecutar `install-macos-services.sh`, el dashboard queda arrancado automáticamente al iniciar sesión.
-
-## Telegram
-
-Comandos:
-
-```text
-/help
-/ping
-/juego https://servidor/archivo
-/estado
-/logs
-/logs bot
-/logs todos
-```
-
-Los `.torrent` pueden enviarse directamente como documentos. El bot solo acepta el chat configurado mediante `TELEGRAM_CHAT_ID`; si falta esa variable, no arranca.
-
-Flujo multimedia:
-
-```text
-Telegram (.torrent) -> TORRENT_DROP_DIR -> qBittorrent -> INBOX_DIR
-                                              |
-                                              v
-                                      Emby Organizer -> SFTP -> Emby
-```
-
-Descarga directa:
-
-```text
-/juego URL -> curl -> GAME_DOWNLOAD_DIR
-```
-
-El bot intenta obtener `Content-Disposition`, tamaño y soporte de rangos. No fuerza HTTP/1.1: deja que `curl` negocie el protocolo con el servidor.
-
-### Cola persistente e historial
-
-El estado se guarda por defecto en:
-
-```text
-~/.local/share/emby_organizer/state.sqlite3
-```
-
-SQLite conserva las descargas directas pendientes/activas y el historial de actividad. Si el bot o el Mac se reinician, las descargas con estado `queued` o `active` vuelven a la cola y `curl -C -` intenta reanudarlas cuando el servidor lo permite.
-
-El historial registra, entre otros eventos:
-
-- contenido subido correctamente a Emby;
-- archivos enviados a `NoClasificado`;
-- errores del Organizer;
-- descargas directas añadidas, completadas o fallidas.
-
-El dashboard nunca muestra la URL de una descarga directa; únicamente nombre, estado, tamaño e intentos.
+El dashboard también muestra estos logs y permite seleccionar cuántas líneas visualizar.
 
 ## Variables principales
 
 | Variable | Uso |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` | Token del bot |
-| `TELEGRAM_CHAT_ID` | Único chat autorizado |
-| `TMDB_API_KEY` | Metadatos opcionales |
-| `INBOX_DIR` | Carpeta procesada por el organizador |
+| `TELEGRAM_BOT_TOKEN` | Token del bot de Telegram |
+| `TELEGRAM_CHAT_ID` | Chat autorizado |
+| `TMDB_API_KEY` | API de TMDb opcional |
+| `INBOX_DIR` | Carpeta vigilada por Organizer |
 | `TORRENT_DROP_DIR` | Destino de `.torrent` recibidos |
-| `GAME_DOWNLOAD_DIR` | Descargas de `/juego` |
-| `GAME_MAX_CONCURRENT` | Descargas simultáneas (2 por defecto) |
-| `GAME_MAX_RETRIES` | Reintentos por descarga |
-| `TELEGRAM_LOG_LINES` | Líneas de log devueltas por Telegram (30 por defecto) |
-| `LOG_ALERT_POLL_SECONDS` | Intervalo de comprobación de errores (2 s por defecto) |
-| `LOG_ALERT_DEDUP_SECONDS` | Ventana de deduplicación de alertas iguales (300 s) |
-| `LOG_ALERT_MAX_CHARS` | Máximo de caracteres enviados por alerta (3000) |
-| `EMBY_STATE_DB` | Ruta opcional de la base SQLite; por defecto `~/.local/share/emby_organizer/state.sqlite3` |
-| `EMBY_SFTP_*_URL` | Destinos SFTP por biblioteca |
-| `EMBY_SFTP_PASSWORD` | Opcional; se recomienda clave SSH |
+| `GAME_DOWNLOAD_DIR` | Destino de `/juego` |
+| `GAME_MAX_CONCURRENT` | Número máximo de descargas simultáneas |
+| `GAME_MAX_RETRIES` | Reintentos máximos por descarga |
+| `GAME_RETRY_DELAY` | Segundos entre reintentos |
+| `TELEGRAM_LOG_LINES` | Líneas de logs enviadas por Telegram |
+| `LOG_ALERT_POLL_SECONDS` | Intervalo del watcher de errores |
+| `LOG_ALERT_DEDUP_SECONDS` | Ventana de deduplicación |
+| `LOG_ALERT_MAX_CHARS` | Tamaño máximo de alertas |
+| `EMBY_STATE_DB` | Ruta opcional de SQLite |
+| `EMBY_STORAGE_REFRESH_SECONDS` | Intervalo de actualización del almacenamiento Emby |
+| `EMBY_SFTP_ANIME_URL` | Biblioteca Anime por SFTP |
+| `EMBY_SFTP_SERIES_URL` | Biblioteca Series por SFTP |
+| `EMBY_SFTP_MOVIES_URL` | Biblioteca Películas por SFTP |
+| `EMBY_SFTP_PASSWORD` | Contraseña SFTP opcional |
+| `EMBY_URL` | URL local de Emby para el watcher |
+| `EMBY_API_KEY` | API key de Emby |
+| `EMBY_WATCH_DIR` | Directorio vigilado en el servidor |
 
-Consulta `.env.example` para la lista completa. Nunca subas `.env` al repositorio.
+Consulta `.env.example` para ver todos los valores disponibles.
+
+## Seguridad
+
+- `.env` está excluido de Git.
+- Las bases SQLite están excluidas de Git.
+- Los logs están excluidos de Git.
+- Las descargas y archivos multimedia están excluidos.
+- El bot solo responde al `TELEGRAM_CHAT_ID` configurado.
+- Las URLs de descargas directas no se muestran en el dashboard.
+- Las URLs firmadas no se escriben en los logs.
+- Los secretos se redactan al enviar logs por Telegram.
+- Los nombres de archivos recibidos se saneán antes de escribirlos.
+- Se recomienda autenticación SFTP mediante clave SSH siempre que sea posible.
+
+Nunca subas `.env` al repositorio.
 
 ## Watcher de Emby en Linux/LXC
 
-El repositorio conserva `scripts/emby-watch-refresh.sh` y `systemd/emby-watch-refresh.service` para refrescar la biblioteca cuando llegan archivos al servidor.
+El proyecto incluye:
 
-Instalación de ejemplo en el servidor Emby:
+```text
+scripts/emby-watch-refresh.sh
+systemd/emby-watch-refresh.service
+```
+
+Sirve para refrescar automáticamente la biblioteca de Emby cuando llegan nuevos archivos.
+
+Ejemplo:
 
 ```bash
 sudo cp scripts/emby-watch-refresh.sh /usr/local/bin/emby-watch-refresh.sh
 sudo chmod +x /usr/local/bin/emby-watch-refresh.sh
+
 sudo cp systemd/emby-watch-refresh.service /etc/systemd/system/
 sudo nano /etc/emby-watch-refresh.env
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now emby-watch-refresh.service
 ```
 
-`/etc/emby-watch-refresh.env` debe contener, al menos:
+Configuración mínima:
 
 ```dotenv
 EMBY_WATCH_DIR=/ruta/a/la/biblioteca
@@ -163,38 +364,59 @@ EMBY_URL=http://127.0.0.1:8096
 EMBY_API_KEY=tu_api_key
 ```
 
-## Seguridad
-
-- `.env`, bases de datos, logs, cachés, entornos virtuales y descargas están ignorados por Git.
-- El bot de Telegram funciona en modo *fail closed*: requiere `TELEGRAM_CHAT_ID`.
-- Los nombres recibidos se saneán antes de escribir archivos.
-- Se recomienda autenticación SFTP mediante clave SSH.
-- No se incluyen credenciales reales en el repositorio.
-
 ## Estructura
 
 ```text
 emby-organizer/
 ├── .env.example
 ├── .gitignore
-├── emby_organizer.py
-├── state_db.py
-├── requirements.txt
-├── README.md
+├── LICENSE
 ├── MACOS_MIGRATION.md
+├── README.md
+├── emby_organizer.py
+├── requirements.txt
+├── state_db.py
 ├── launchd/
-│   ├── com.tone.emby-organizer.plist.template
-│   ├── com.tone.telegram-download-bot.plist.template
+│   ├── com.tone.emby-log-alerts.plist.template
 │   ├── com.tone.emby-log-viewer.plist.template
-│   └── com.tone.emby-log-alerts.plist.template
+│   ├── com.tone.emby-organizer.plist.template
+│   └── com.tone.telegram-download-bot.plist.template
 ├── scripts/
 │   ├── emby-watch-refresh.sh
 │   ├── install-macos-services.sh
-│   ├── log-viewer.py
 │   ├── log-error-watcher.py
+│   ├── log-viewer.py
 │   ├── open-logs-macos.sh
 │   ├── status-macos.sh
 │   └── telegram_torrent_bot.py
 └── systemd/
     └── emby-watch-refresh.service
 ```
+
+## Comprobación rápida
+
+Validar sintaxis:
+
+```bash
+python3 -m py_compile \
+  state_db.py \
+  emby_organizer.py \
+  scripts/log-viewer.py \
+  scripts/telegram_torrent_bot.py
+```
+
+Comprobar espacios o errores de diff:
+
+```bash
+git diff --check
+```
+
+Abrir dashboard:
+
+```bash
+http://127.0.0.1:8765
+```
+
+## Licencia
+
+Consulta `LICENSE`.
