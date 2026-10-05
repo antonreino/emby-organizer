@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import sqlite3
 import threading
@@ -82,6 +83,11 @@ def _initialize_once() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_downloads_status ON downloads(status);
             CREATE INDEX IF NOT EXISTS idx_downloads_updated_at ON downloads(updated_at DESC);
+            CREATE TABLE IF NOT EXISTS runtime_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
                     """
                 )
             return
@@ -104,6 +110,91 @@ def init_db() -> None:
             return
         _initialize_once()
         _INITIALIZED = True
+
+
+
+def set_runtime_state(key: str, value: dict[str, Any]) -> None:
+    init_db()
+    now = utc_now()
+    payload = json.dumps(value, ensure_ascii=False)
+    with closing(connect()) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO runtime_state (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (key, payload, now),
+        )
+
+
+def get_runtime_state(key: str) -> dict[str, Any] | None:
+    init_db()
+    with closing(connect()) as conn, conn:
+        row = conn.execute(
+            "SELECT value, updated_at FROM runtime_state WHERE key = ?",
+            (key,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    try:
+        value = json.loads(row["value"])
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+    if isinstance(value, dict):
+        value.setdefault("stored_at", row["updated_at"])
+        return value
+    return None
+
+
+def save_emby_storage(*, path: str, total: int, used: int, free: int) -> None:
+    set_runtime_state(
+        "emby_storage",
+        {
+            "available": True,
+            "path": path,
+            "total": int(total),
+            "used": int(used),
+            "free": int(free),
+            "used_percent": round((int(used) * 100 / int(total)), 1) if total else 0.0,
+            "updated_at": utc_now(),
+            "stale": False,
+        },
+    )
+
+
+def mark_emby_storage_error(error: str) -> None:
+    current = get_runtime_state("emby_storage") or {
+        "available": False,
+        "path": None,
+        "total": 0,
+        "used": 0,
+        "free": 0,
+        "used_percent": 0.0,
+    }
+    current["last_error"] = str(error)
+    current["last_error_at"] = utc_now()
+    current["stale"] = bool(current.get("available"))
+    set_runtime_state("emby_storage", current)
+
+
+def emby_storage_snapshot() -> dict[str, Any]:
+    current = get_runtime_state("emby_storage")
+    if current is None:
+        return {
+            "available": False,
+            "error": "Todavía no hay una lectura del almacenamiento de Emby",
+            "stale": False,
+        }
+
+    if not current.get("available"):
+        current["error"] = current.get("last_error") or "Sin información de almacenamiento"
+    return current
 
 
 def add_history(
@@ -236,6 +327,91 @@ def recent_downloads(limit: int = 20) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+
+def dashboard_statistics() -> dict[str, Any]:
+    """Estadísticas del historial persistente desde que existe la base SQLite."""
+    init_db()
+
+    def aggregate(conn: sqlite3.Connection, modifier: str | None = None) -> dict[str, int]:
+        where = ""
+        params: tuple[Any, ...] = ()
+        if modifier is not None:
+            where = "WHERE datetime(created_at) >= datetime('now', ?)"
+            params = (modifier,)
+
+        row = conn.execute(
+            f"""
+            SELECT
+                COALESCE(SUM(CASE
+                    WHEN kind = 'download' AND status = 'success'
+                    THEN COALESCE(size_bytes, 0) ELSE 0 END), 0) AS downloaded_bytes,
+                COALESCE(SUM(CASE
+                    WHEN kind = 'organizer' AND status = 'success'
+                    THEN COALESCE(size_bytes, 0) ELSE 0 END), 0) AS moved_bytes,
+                SUM(CASE WHEN kind = 'download' AND status = 'success' THEN 1 ELSE 0 END) AS download_count,
+                SUM(CASE WHEN kind = 'organizer' AND status = 'success' THEN 1 ELSE 0 END) AS moved_count
+            FROM history
+            {where}
+            """,
+            params,
+        ).fetchone()
+
+        return {
+            "downloaded_bytes": int(row["downloaded_bytes"] or 0),
+            "moved_bytes": int(row["moved_bytes"] or 0),
+            "download_count": int(row["download_count"] or 0),
+            "moved_count": int(row["moved_count"] or 0),
+        }
+
+    with closing(connect()) as conn, conn:
+        periods = [
+            {"label": "Últimas 24 horas", **aggregate(conn, "-1 day")},
+            {"label": "Últimos 7 días", **aggregate(conn, "-7 days")},
+            {"label": "Últimos 30 días", **aggregate(conn, "-30 days")},
+            {"label": "Todo el historial", **aggregate(conn)},
+        ]
+
+        categories = [
+            {
+                "category": row["category"] or "Sin categoría",
+                "bytes": int(row["bytes"] or 0),
+                "count": int(row["count"] or 0),
+            }
+            for row in conn.execute(
+                """
+                SELECT category,
+                       COALESCE(SUM(size_bytes), 0) AS bytes,
+                       COUNT(*) AS count
+                FROM history
+                WHERE kind = 'organizer' AND status = 'success'
+                GROUP BY category
+                ORDER BY bytes DESC
+                """
+            ).fetchall()
+        ]
+
+        bounds = conn.execute(
+            """
+            SELECT MIN(created_at) AS first_event,
+                   MAX(created_at) AS last_event
+            FROM history
+            """
+        ).fetchone()
+
+    total = periods[-1]
+    return {
+        "downloaded_bytes": total["downloaded_bytes"],
+        "moved_bytes": total["moved_bytes"],
+        "total_bytes": total["downloaded_bytes"] + total["moved_bytes"],
+        "download_count": total["download_count"],
+        "moved_count": total["moved_count"],
+        "periods": periods,
+        "categories": categories,
+        "first_event": bounds["first_event"],
+        "last_event": bounds["last_event"],
+    }
+
+
 def dashboard_summary() -> dict[str, Any]:
     init_db()
     with closing(connect()) as conn, conn:
@@ -250,7 +426,9 @@ def dashboard_summary() -> dict[str, Any]:
             SELECT COUNT(*) AS count,
                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
                    SUM(CASE WHEN status IN ('error', 'failed') THEN 1 ELSE 0 END) AS errors,
-                   COALESCE(SUM(CASE WHEN status = 'success' THEN size_bytes ELSE 0 END), 0) AS bytes
+                   COALESCE(SUM(CASE WHEN status = 'success' THEN size_bytes ELSE 0 END), 0) AS bytes,
+                   COALESCE(SUM(CASE WHEN kind = 'download' AND status = 'success' THEN size_bytes ELSE 0 END), 0) AS downloaded_bytes,
+                   COALESCE(SUM(CASE WHEN kind = 'organizer' AND status = 'success' THEN size_bytes ELSE 0 END), 0) AS moved_bytes
             FROM history
             WHERE datetime(created_at) >= datetime('now', '-1 day')
             """
@@ -262,5 +440,7 @@ def dashboard_summary() -> dict[str, Any]:
             "success": int(history_24h["success"] or 0),
             "errors": int(history_24h["errors"] or 0),
             "bytes": int(history_24h["bytes"] or 0),
+            "downloaded_bytes": int(history_24h["downloaded_bytes"] or 0),
+            "moved_bytes": int(history_24h["moved_bytes"] or 0),
         },
     }

@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 import requests
 from dotenv import load_dotenv
 
-from state_db import add_history, init_db
+from state_db import add_history, init_db, mark_emby_storage_error, save_emby_storage
 
 try:
     import paramiko
@@ -34,6 +34,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 INBOX_DIR = Path(os.environ.get("INBOX_DIR", str(Path.home() / "Documents" / "Torrent"))).expanduser()
 STABLE_SECONDS = 180
 SCAN_INTERVAL_SECONDS = 30
+EMBY_STORAGE_REFRESH_SECONDS = int(os.environ.get("EMBY_STORAGE_REFRESH_SECONDS", "300"))
 LOG_FILE = Path.home() / ".local" / "share" / "emby_organizer" / "organizer.log"
 STATE_DIR = Path.home() / ".local" / "share" / "emby_organizer"
 QUARANTINE_LOCAL_DIR = INBOX_DIR / "NoClasificado"
@@ -252,6 +253,55 @@ class SftpUploader:
             sftp, _ = self._connect(category)
             return operation(sftp)
 
+    def storage_info(self, category: str = "movies") -> dict:
+        """Devuelve espacio total/usado/disponible del filesystem remoto por SFTP."""
+        sftp, target = self._connect(category)
+
+        try:
+            stat = sftp.statvfs(target.path)
+            block_size = int(stat.f_frsize or stat.f_bsize or 4096)
+            total = int(stat.f_blocks) * block_size
+            free_all = int(stat.f_bfree) * block_size
+            free_available = int(stat.f_bavail) * block_size
+            used = max(0, total - free_all)
+            return {
+                "path": target.path,
+                "total": total,
+                "used": used,
+                "free": free_available,
+            }
+        except Exception:
+            if self._transport is None:
+                raise
+            channel = self._transport.open_session(timeout=8)
+            try:
+                command_path = target.path.replace("'", "'\"'\"'")
+                channel.exec_command(f"df -Pk '{command_path}'")
+                stdout = channel.makefile("r", -1).read()
+                stderr = channel.makefile_stderr("r", -1).read()
+                status = channel.recv_exit_status()
+                if status != 0:
+                    raise OrganizerError(stderr.strip() or f"df terminó con código {status}")
+
+                if isinstance(stdout, bytes):
+                    stdout = stdout.decode("utf-8", errors="replace")
+                lines = [line for line in stdout.splitlines() if line.strip()]
+                if len(lines) < 2:
+                    raise OrganizerError("Respuesta de df incompleta")
+
+                parts = lines[-1].split()
+                if len(parts) < 6:
+                    raise OrganizerError("Formato de df no reconocido")
+
+                return {
+                    "path": target.path,
+                    "total": int(parts[1]) * 1024,
+                    "used": int(parts[2]) * 1024,
+                    "free": int(parts[3]) * 1024,
+                }
+            finally:
+                channel.close()
+
     def ensure_remote_dir(self, category: str, remote_dir: str):
         def op(sftp):
             parts = [p for p in remote_dir.strip("/").split("/") if p]
@@ -322,6 +372,7 @@ class MediaOrganizer:
     def __init__(self, dry_run: bool = False):
         self.dry_run = dry_run
         self.uploader = SftpUploader(LIBRARIES)
+        self._last_storage_refresh = 0.0
         self._ensure_dirs()
 
     def _ensure_dirs(self):
@@ -329,6 +380,33 @@ class MediaOrganizer:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         QUARANTINE_LOCAL_DIR.mkdir(parents=True, exist_ok=True)
         init_db()
+
+    def refresh_emby_storage(self, force: bool = False):
+        now = time.monotonic()
+        if (
+            not force
+            and self._last_storage_refresh
+            and now - self._last_storage_refresh < EMBY_STORAGE_REFRESH_SECONDS
+        ):
+            return
+
+        self._last_storage_refresh = now
+        try:
+            info = self.uploader.storage_info("movies")
+            save_emby_storage(
+                path=info["path"],
+                total=info["total"],
+                used=info["used"],
+                free=info["free"],
+            )
+            logging.info(
+                "Espacio Emby actualizado: %.1f GB libres de %.1f TB",
+                info["free"] / 1_000_000_000,
+                info["total"] / 1_000_000_000_000,
+            )
+        except Exception as exc:
+            mark_emby_storage_error(str(exc))
+            logging.warning("No se pudo actualizar el espacio de Emby: %s", exc)
 
     def shutdown(self):
         self.uploader.close()
@@ -984,6 +1062,7 @@ class MediaOrganizer:
         logging.info("Modo daemon iniciado. Escaneando %s cada %s segundos.", INBOX_DIR, SCAN_INTERVAL_SECONDS)
         while True:
             try:
+                self.refresh_emby_storage()
                 self.scan_once()
             except Exception as exc:
                 logging.exception("Error durante el escaneo")
@@ -1026,6 +1105,7 @@ def main():
 
     try:
         if args.scan_once:
+            organizer.refresh_emby_storage(force=True)
             organizer.scan_once()
         elif args.daemon:
             organizer.run_daemon()

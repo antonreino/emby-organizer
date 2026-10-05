@@ -3,24 +3,35 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import paramiko
 from dotenv import load_dotenv
 
 APP_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(APP_DIR))
-from state_db import dashboard_summary, init_db, recent_downloads, recent_history
+from state_db import dashboard_statistics, dashboard_summary, emby_storage_snapshot, init_db, recent_downloads, recent_history
 
 load_dotenv(APP_DIR / ".env")
 
 LOG_DIR = Path.home() / "Library" / "Logs"
 GAME_DOWNLOAD_DIR = Path(os.getenv("GAME_DOWNLOAD_DIR", str(Path.home() / "Downloads" / "Games"))).expanduser()
+EMBY_SFTP_URLS = [
+    os.getenv("EMBY_SFTP_MOVIES_URL", ""),
+    os.getenv("EMBY_SFTP_SERIES_URL", ""),
+    os.getenv("EMBY_SFTP_ANIME_URL", ""),
+]
+EMBY_SFTP_PASSWORD = os.getenv("EMBY_SFTP_PASSWORD") or None
+_EMBY_DISK_CACHE = {"at": 0.0, "data": None}
+_EMBY_DISK_CACHE_SECONDS = 60.0
 LOGS = {
     "organizer_out": LOG_DIR / "emby-organizer.out.log",
     "organizer_err": LOG_DIR / "emby-organizer.err.log",
@@ -37,39 +48,670 @@ SERVICES = {
 LOG_TS_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}:\d{2})(?:,\d+)?(?P<rest>.*)$")
 
 HTML = r'''<!doctype html>
-<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Emby Automation · Dashboard</title>
 <style>
-:root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;padding:24px;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;background:Canvas;color:CanvasText}header{display:flex;justify-content:space-between;gap:18px;align-items:center;flex-wrap:wrap;margin-bottom:18px}h1{font-size:24px;margin:0}.muted{opacity:.65}.statusline{font-size:13px}.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}.card,.panel{border:1px solid color-mix(in srgb,CanvasText 14%,transparent);border-radius:14px;background:color-mix(in srgb,Canvas 96%,CanvasText 4%)}.card{padding:14px}.card b{font-size:22px;display:block;margin-top:7px}.services{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px}.service{padding:12px}.ok{color:#30d158}.bad{color:#ff453a}.warn{color:#ff9f0a}.grid{display:grid;grid-template-columns:1.15fr .85fr;gap:14px}.panel{overflow:hidden;margin-bottom:14px}.panel h2{font-size:15px;margin:0;padding:11px 13px;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent)}table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;padding:9px 12px;border-bottom:1px solid color-mix(in srgb,CanvasText 8%,transparent);vertical-align:top}th{font-size:12px;opacity:.65}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.pill{display:inline-block;padding:2px 7px;border-radius:999px;background:color-mix(in srgb,CanvasText 10%,transparent);font-size:11px}.log-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}button,select{font:inherit;padding:7px 10px;border-radius:8px;border:1px solid color-mix(in srgb,CanvasText 20%,transparent);background:Canvas}.logs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.log pre{margin:0;padding:12px;min-height:220px;max-height:38vh;overflow:auto;white-space:pre-wrap;word-break:break-word;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}.error h2{color:#ff453a}.empty{padding:18px;opacity:.6}@media(max-width:1050px){.cards,.services{grid-template-columns:repeat(2,1fr)}.grid,.logs{grid-template-columns:1fr}}@media(max-width:600px){body{padding:14px}.cards,.services{grid-template-columns:1fr}}
-</style></head><body>
-<header><div><h1>🎬 Emby Automation</h1><div class="statusline muted" id="updated">Cargando…</div></div><div class="log-controls"><label>Logs <select id="lines"><option>100</option><option selected>300</option><option>1000</option></select></label><button onclick="refreshAll()">Actualizar</button></div></header>
-<section class="services" id="services"></section>
-<section class="cards">
-<div class="card"><span class="muted">Procesados 24 h</span><b id="hcount">0</b></div>
-<div class="card"><span class="muted">Correctos 24 h</span><b id="hsuccess">0</b></div>
-<div class="card"><span class="muted">Errores 24 h</span><b id="herrors">0</b></div>
-<div class="card"><span class="muted">Datos 24 h</span><b id="hbytes">0 B</b></div>
-</section>
-<div class="grid">
-<section class="panel"><h2>📥 Cola y descargas recientes</h2><div id="downloads"></div></section>
-<section class="panel"><h2>💾 Almacenamiento</h2><div id="disk" style="padding:14px"></div></section>
+:root{
+  color-scheme: dark;
+  --bg:#07111f;
+  --panel:rgba(13,22,40,.82);
+  --border:rgba(255,255,255,.08);
+  --text:#eef4ff;
+  --muted:#9db0ce;
+  --accent:#6ea8ff;
+  --accent-2:#8f7cff;
+  --ok:#30d158;
+  --warn:#ffb340;
+  --bad:#ff5d73;
+  --cyan:#49d6ff;
+  --shadow:0 18px 60px rgba(0,0,0,.28);
+  --radius:20px;
+}
+*{box-sizing:border-box}
+html,body{min-height:100%}
+body{
+  margin:0;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;
+  color:var(--text);
+  background:
+    radial-gradient(circle at top left, rgba(110,168,255,.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(143,124,255,.16), transparent 24%),
+    radial-gradient(circle at bottom, rgba(73,214,255,.08), transparent 30%),
+    linear-gradient(180deg, #050b16 0%, var(--bg) 52%, #050b16 100%);
+}
+body::before{
+  content:"";
+  position:fixed; inset:0;
+  background-image:
+    linear-gradient(rgba(255,255,255,.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.02) 1px, transparent 1px);
+  background-size:26px 26px;
+  mask-image:linear-gradient(180deg, rgba(0,0,0,.5), transparent 88%);
+  pointer-events:none;
+}
+.app{
+  width:min(1500px, calc(100% - 32px));
+  margin:26px auto 38px;
+  position:relative;
+  z-index:1;
+}
+.hero{
+  display:flex;
+  justify-content:space-between;
+  gap:20px;
+  align-items:flex-start;
+  padding:28px;
+  margin-bottom:18px;
+  border:1px solid var(--border);
+  border-radius:28px;
+  background:linear-gradient(140deg, rgba(17,27,48,.96), rgba(8,16,30,.92));
+  box-shadow:var(--shadow);
+  backdrop-filter:blur(18px);
+}
+.eyebrow{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 12px;
+  border-radius:999px;
+  background:rgba(110,168,255,.12);
+  border:1px solid rgba(110,168,255,.2);
+  color:#cfe1ff;
+  font-size:12px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  font-weight:700;
+}
+.hero h1{
+  margin:14px 0 8px;
+  font-size:38px;
+  line-height:1.05;
+  letter-spacing:-.03em;
+}
+.hero p{
+  margin:0;
+  color:var(--muted);
+  font-size:15px;
+  max-width:640px;
+}
+.hero__side{
+  width:min(430px, 100%);
+  min-width:430px;
+  display:grid;
+  gap:12px;
+}
+.status-badge{
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  align-items:center;
+  padding:14px 16px;
+  border-radius:18px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.04);
+}
+.status-badge strong{font-size:15px}
+.status-badge span{font-size:13px;color:var(--muted)}
+.status-badge #updated{
+  display:inline-block;
+  min-width:190px;
+  text-align:right;
+  white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+  font-feature-settings:"tnum" 1;
+}
+.controls{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.select-wrap,.button{
+  display:inline-flex;align-items:center;gap:10px;min-height:48px;padding:0 16px;border-radius:16px;
+  border:1px solid var(--border);background:rgba(255,255,255,.05);color:var(--text);font:inherit;
+}
+.select-wrap{
+  color:var(--muted);
+  position:relative;
+  padding-right:38px;
+  cursor:pointer;
+  border-color:rgba(110,168,255,.28);
+  background:rgba(110,168,255,.08);
+}
+.select-wrap::after{
+  content:"⌄";
+  position:absolute;
+  right:14px;
+  top:50%;
+  transform:translateY(-54%);
+  color:#dbe8ff;
+  font-size:18px;
+  font-weight:800;
+  pointer-events:none;
+}
+.select-wrap:hover{
+  background:rgba(110,168,255,.13);
+  border-color:rgba(110,168,255,.42);
+}
+select{appearance:none;border:0;background:transparent;color:var(--text);font:inherit;outline:none;cursor:pointer;padding-right:8px}
+.button{
+  cursor:pointer;color:white;font-weight:700;background:linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow:0 10px 22px rgba(110,168,255,.25);
+}
+.button:hover{filter:brightness(1.05)}
+.github-link{
+  display:inline-flex;
+  align-items:center;
+  gap:9px;
+  min-height:48px;
+  padding:0 16px;
+  border-radius:16px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.05);
+  color:var(--text);
+  font-weight:700;
+  text-decoration:none;
+  transition:background .18s ease, transform .18s ease, border-color .18s ease;
+}
+.github-link:hover{
+  background:rgba(255,255,255,.09);
+  border-color:rgba(255,255,255,.14);
+  transform:translateY(-1px);
+}
+.github-link svg{
+  width:19px;
+  height:19px;
+  fill:currentColor;
+  flex:none;
+}
+.section-title{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0;font-size:16px;letter-spacing:-.01em}
+.tabs{
+  display:flex;
+  gap:8px;
+  margin:0 0 18px;
+  padding:6px;
+  width:max-content;
+  border:1px solid var(--border);
+  border-radius:16px;
+  background:rgba(13,22,40,.72);
+  box-shadow:var(--shadow);
+  backdrop-filter:blur(14px);
+}
+.tab{
+  border:0;
+  border-radius:11px;
+  padding:10px 16px;
+  background:transparent;
+  color:var(--muted);
+  font:inherit;
+  font-weight:700;
+  cursor:pointer;
+}
+.tab:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.tab.active{
+  color:#fff;
+  background:linear-gradient(135deg,rgba(110,168,255,.28),rgba(143,124,255,.28));
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);
+}
+.view{display:none}
+.view.active{display:block}
+.stats-grid{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:14px;
+  margin-bottom:18px;
+}
+.stat-big{
+  font-size:32px;
+  font-weight:800;
+  letter-spacing:-.04em;
+  margin-top:10px;
+}
+.stat-sub{margin-top:8px;color:var(--muted);font-size:12px}
+
+.section-title small{color:var(--muted);font-weight:500;font-size:12px}
+.services{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:18px}
+.service-card,.metric-card,.panel{
+  border:1px solid var(--border);border-radius:var(--radius);background:var(--panel);backdrop-filter:blur(14px);box-shadow:var(--shadow);
+}
+.service-card{padding:18px;position:relative;overflow:hidden}
+.service-card::after{
+  content:"";position:absolute;inset:auto -20% -40% auto;width:150px;height:150px;border-radius:50%;
+  background:radial-gradient(circle, rgba(110,168,255,.20), transparent 68%);pointer-events:none;
+}
+.service-card__name{color:var(--muted);font-size:13px;margin-bottom:14px}
+.service-card__state{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700}
+.dot{width:11px;height:11px;border-radius:50%;display:inline-block;box-shadow:0 0 14px currentColor}
+.ok{color:var(--ok)}
+.warn{color:var(--warn)}
+.bad{color:var(--bad)}
+.muted{color:var(--muted)}
+.metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin-bottom:18px}
+.metric-card{padding:18px;position:relative;overflow:hidden}
+.metric-card::before{
+  content:"";position:absolute;inset:0 auto auto 0;width:100%;height:2px;
+  background:linear-gradient(90deg, var(--accent), var(--accent-2), var(--cyan));opacity:.85;
+}
+.metric-card__label{color:var(--muted);font-size:13px}
+.metric-card__value{margin-top:12px;font-size:34px;font-weight:800;letter-spacing:-.04em}
+.metric-card__hint{margin-top:8px;color:var(--muted);font-size:12px}
+.layout{display:grid;grid-template-columns:1.15fr .85fr;gap:18px;margin-bottom:18px}
+.panel{overflow:hidden}
+.panel__head{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 20px;
+  border-bottom:1px solid rgba(255,255,255,.06);background:linear-gradient(180deg, rgba(255,255,255,.03), transparent);
+}
+.panel__body{padding:0}
+.panel__body.pad{padding:20px}
+.storage-grid{display:grid;gap:16px}
+.storage-chip{
+  padding:16px;border-radius:18px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);
+}
+.storage-chip strong{display:block;margin-bottom:8px;font-size:14px}
+.storage-bar{height:10px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden;margin-top:14px}
+.storage-bar__fill{height:100%;border-radius:999px;background:linear-gradient(90deg, var(--accent), var(--cyan))}
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead th{
+  text-align:left;padding:13px 16px;color:var(--muted);font-size:12px;letter-spacing:.04em;
+  text-transform:uppercase;border-bottom:1px solid rgba(255,255,255,.06);
+}
+tbody td{padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.05);vertical-align:top}
+tbody tr:hover{background:rgba(255,255,255,.025)}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.pill{
+  display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.04em;border:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.06);
+}
+.pill.ok{background:rgba(48,209,88,.12);color:#b8ffca;border-color:rgba(48,209,88,.22)}
+.pill.warn{background:rgba(255,179,64,.12);color:#ffe2aa;border-color:rgba(255,179,64,.24)}
+.pill.bad{background:rgba(255,93,115,.12);color:#ffc1cb;border-color:rgba(255,93,115,.24)}
+.progress{min-width:180px}
+.progress-track{height:8px;border-radius:999px;background:rgba(255,255,255,.09);overflow:hidden;margin-bottom:6px}
+.progress-fill{
+  height:100%;border-radius:999px;background:linear-gradient(90deg, var(--accent), var(--cyan));box-shadow:0 0 18px rgba(73,214,255,.32);
+}
+.progress-label{font-size:11px;color:var(--muted);white-space:nowrap}
+.logs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.log-panel pre{
+  margin:0;padding:18px 20px 20px;min-height:240px;max-height:42vh;overflow:auto;white-space:pre-wrap;word-break:break-word;
+  font:12px/1.58 ui-monospace,SFMono-Regular,Menlo,monospace;color:#dbe7ff;background:linear-gradient(180deg, rgba(6,10,18,.58), rgba(5,9,17,.92));
+}
+.log-panel.error pre{color:#ffd7dd}
+.log-panel pre::-webkit-scrollbar{width:10px;height:10px}
+.log-panel pre::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:999px}
+.empty{padding:28px 20px;color:var(--muted)}
+@media (max-width:1220px){
+  .services,.metrics,.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .layout,.logs{grid-template-columns:1fr}
+  .hero{flex-direction:column}
+  .hero__side{width:100%}
+  .controls{justify-content:flex-start}
+}
+@media (max-width:720px){
+  .app{width:min(100% - 18px, 1500px);margin:14px auto 28px}
+  .hero{padding:20px}
+  .hero h1{font-size:30px}
+  .services,.metrics,.stats-grid{grid-template-columns:1fr}
+  thead{display:none}
+  table,tbody,tr,td{display:block;width:100%}
+  tbody tr{padding:10px 0}
+  tbody td{display:flex;justify-content:space-between;gap:16px;padding:9px 16px}
+  tbody td::before{
+    content:attr(data-label);color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em;
+  }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="hero">
+    <div class="hero__main">
+      <div class="eyebrow">Emby Automation · Dashboard</div>
+      <h1>Control total, limpio y moderno</h1>
+      <p>Estado de servicios, descargas, historial y logs en tiempo real, con una interfaz más actual y cómoda para usar desde el Mac.</p>
+    </div>
+    <div class="hero__side">
+      <div class="status-badge">
+        <div>
+          <strong>Estado del panel</strong><br>
+          <span>Actualización automática cada 3 segundos</span>
+        </div>
+        <span id="updated">Cargando…</span>
+      </div>
+      <div class="controls">
+        <a class="github-link"
+           href="https://github.com/antonreino/emby-organizer"
+           target="_blank"
+           rel="noopener noreferrer"
+           title="Abrir repositorio en GitHub"
+           aria-label="Abrir repositorio emby-organizer en GitHub">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 .7a11.3 11.3 0 0 0-3.57 22c.57.1.78-.24.78-.55v-2.16c-3.18.69-3.85-1.35-3.85-1.35-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.68 1.25 3.34.96.1-.74.4-1.25.73-1.54-2.54-.29-5.21-1.27-5.21-5.65 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.46.11-3.03 0 0 .96-.31 3.12 1.17A10.85 10.85 0 0 1 12 5.91c.97 0 1.94.13 2.85.38 2.16-1.48 3.11-1.17 3.11-1.17.63 1.57.24 2.74.12 3.03.74.8 1.18 1.82 1.18 3.07 0 4.39-2.68 5.35-5.23 5.64.41.36.78 1.05.78 2.12v3.17c0 .31.2.66.79.55A11.3 11.3 0 0 0 12 .7Z"/>
+          </svg>
+          GitHub
+        </a>
+        <label class="select-wrap">Líneas de log
+          <select id="lines">
+            <option>100</option>
+            <option selected>300</option>
+            <option>1000</option>
+          </select>
+        </label>
+        <button class="button" onclick="refreshAll()">Actualizar ahora</button>
+      </div>
+    </div>
+  </header>
+
+
+  <nav class="tabs" aria-label="Secciones del dashboard">
+    <button class="tab active" data-view="inicio">Inicio</button>
+    <button class="tab" data-view="estadisticas">Estadísticas</button>
+  </nav>
+
+  <div id="view-inicio" class="view active">
+  <section class="services" id="services"></section>
+
+  <section class="metrics">
+    <div class="metric-card">
+      <div class="metric-card__label">Procesados · 24 h</div>
+      <div class="metric-card__value" id="hcount">0</div>
+      <div class="metric-card__hint">Total de eventos recientes registrados</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-card__label">Correctos · 24 h</div>
+      <div class="metric-card__value" id="hsuccess">0</div>
+      <div class="metric-card__hint">Eventos finalizados correctamente</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-card__label">Errores · 24 h</div>
+      <div class="metric-card__value" id="herrors">0</div>
+      <div class="metric-card__hint">Fallos detectados en el último día</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-card__label">Descargados · 24 h</div>
+      <div class="metric-card__value" id="hdownloadbytes">0 B</div>
+      <div class="metric-card__hint">Descargas directas completadas</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-card__label">Movidos a Emby · 24 h</div>
+      <div class="metric-card__value" id="hmovedbytes">0 B</div>
+      <div class="metric-card__hint">Contenido enviado a las bibliotecas Emby</div>
+    </div>
+  </section>
+
+  <div class="layout">
+    <section class="panel">
+      <div class="panel__head">
+        <h2 class="section-title">📥 Cola y descargas recientes <small>Estado y progreso en vivo</small></h2>
+      </div>
+      <div class="panel__body" id="downloads"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel__head">
+        <h2 class="section-title">💾 Almacenamiento <small>Espacio disponible</small></h2>
+      </div>
+      <div class="panel__body pad" id="disk"></div>
+    </section>
+  </div>
+
+  <section class="panel" style="margin-bottom:18px;">
+    <div class="panel__head">
+      <h2 class="section-title">🕘 Historial reciente <small>Últimos eventos del sistema</small></h2>
+      </div>
+    <div class="panel__body" id="history"></div>
+  </section>
+
+  <section class="logs">
+    <section class="panel log-panel">
+      <div class="panel__head">
+        <h2 class="section-title">Organizer <small>Salida estándar</small></h2>
+      </div>
+      <pre id="organizer_out"></pre>
+    </section>
+
+    <section class="panel log-panel error">
+      <div class="panel__head">
+        <h2 class="section-title">Organizer · stderr <small>Errores y trazas</small></h2>
+      </div>
+      <pre id="organizer_err"></pre>
+    </section>
+
+    <section class="panel log-panel">
+      <div class="panel__head">
+        <h2 class="section-title">Telegram bot <small>Actividad del bot</small></h2>
+      </div>
+      <pre id="telegram_out"></pre>
+    </section>
+
+    <section class="panel log-panel error">
+      <div class="panel__head">
+        <h2 class="section-title">Telegram · stderr <small>Errores del bot</small></h2>
+      </div>
+      <pre id="telegram_err"></pre>
+    </section>
+  </section>
+
+  </div>
+
+  <div id="view-estadisticas" class="view">
+    <section class="stats-grid">
+      <div class="metric-card">
+        <div class="metric-card__label">Descargado · histórico</div>
+        <div class="stat-big" id="statDownloaded">0 B</div>
+        <div class="stat-sub" id="statDownloadCount">0 descargas completadas</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-card__label">Movido a Emby · histórico</div>
+        <div class="stat-big" id="statMoved">0 B</div>
+        <div class="stat-sub" id="statMovedCount">0 archivos enviados</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-card__label">Datos gestionados · histórico</div>
+        <div class="stat-big" id="statTotal">0 B</div>
+        <div class="stat-sub">Descargas + transferencias a Emby</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-card__label">Historial disponible desde</div>
+        <div class="stat-big" id="statSince" style="font-size:22px">—</div>
+        <div class="stat-sub">Los totales empiezan cuando se activó SQLite</div>
+      </div>
+    </section>
+
+    <div class="layout">
+      <section class="panel">
+        <div class="panel__head">
+          <h2 class="section-title">📊 Datos por periodo <small>Descargado frente a movido</small></h2>
+        </div>
+        <div class="panel__body" id="periodStats"></div>
+      </section>
+      <section class="panel">
+        <div class="panel__head">
+          <h2 class="section-title">🎬 Bibliotecas Emby <small>Histórico por categoría</small></h2>
+        </div>
+        <div class="panel__body" id="categoryStats"></div>
+      </section>
+    </div>
+  </div>
 </div>
-<section class="panel"><h2>🕘 Historial reciente</h2><div id="history"></div></section>
-<section class="logs">
-<section class="panel log"><h2>Organizer</h2><pre id="organizer_out"></pre></section>
-<section class="panel log error"><h2>Organizer · stderr</h2><pre id="organizer_err"></pre></section>
-<section class="panel log"><h2>Telegram bot</h2><pre id="telegram_out"></pre></section>
-<section class="panel log error"><h2>Telegram · stderr</h2><pre id="telegram_err"></pre></section>
-</section>
+
 <script>
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
 function size(n){if(n==null)return "—";let v=Number(n),u=["B","KB","MB","GB","TB"],i=0;while(v>=1000&&i<u.length-1){v/=1000;i++}return `${v.toFixed(i?1:0)} ${u[i]}`}
-function serviceLabel(k){return {organizer:"Organizer",telegram:"Telegram",viewer:"Dashboard",alerts:"Alertas"}[k]||k}
-function table(rows, cols){if(!rows.length)return '<div class="empty">Sin datos todavía.</div>';return `<table><thead><tr>${cols.map(c=>`<th>${esc(c[0])}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${c[1](r)}</td>`).join("")}</tr>`).join("")}</tbody></table>`}
-async function loadDashboard(){const r=await fetch('/api/dashboard',{cache:'no-store'});const d=await r.json();document.getElementById('services').innerHTML=Object.entries(d.services).map(([k,v])=>`<div class="card service"><span>${serviceLabel(k)}</span><b class="${v.running?'ok':'bad'}">${v.running?'● Activo':'● '+esc(v.state)}</b></div>`).join('');const h=d.summary.history_24h;document.getElementById('hcount').textContent=h.count;document.getElementById('hsuccess').textContent=h.success;document.getElementById('herrors').textContent=h.errors;document.getElementById('hbytes').textContent=size(h.bytes);document.getElementById('downloads').innerHTML=table(d.downloads,[['ID',r=>'#'+r.id],['Nombre',r=>esc(r.name)],['Estado',r=>`<span class="pill">${esc(r.status)}</span>`],['Tamaño',r=>size(r.size_bytes)],['Intento',r=>esc(r.attempt||0)]]);document.getElementById('history').innerHTML=table(d.history,[['Fecha',r=>esc((r.created_at||'').replace('T',' ').replace('+00:00',' UTC'))],['Tipo',r=>esc(r.kind)],['Estado',r=>`<span class="pill">${esc(r.status)}</span>`],['Título',r=>esc(r.title||'—')],['Categoría',r=>esc(r.category||'—')],['Detalle',r=>esc(r.details||'—')]]);document.getElementById('disk').innerHTML=`<b>${esc(d.disk.path)}</b><p>${size(d.disk.free)} libres de ${size(d.disk.total)} · ${d.disk.exists?'montado/disponible':'no disponible'}</p>`;document.getElementById('updated').textContent='Actualizado '+new Date().toLocaleTimeString()}
-async function loadLogs(){const lines=linesEl.value;const r=await fetch(`/api/logs?lines=${lines}`,{cache:'no-store'});const d=await r.json();for(const[k,v]of Object.entries(d.logs)){const el=document.getElementById(k);const near=el.scrollHeight-el.scrollTop-el.clientHeight<80;el.textContent=v||'(vacío)';if(near)el.scrollTop=el.scrollHeight}}
-const linesEl=document.getElementById('lines');linesEl.addEventListener('change',loadLogs);async function refreshAll(){try{await Promise.all([loadDashboard(),loadLogs()])}catch(e){document.getElementById('updated').textContent='Error: '+e}}refreshAll();setInterval(refreshAll,3000);
-</script></body></html>'''
+function serviceLabel(k){return {organizer:"Organizer",telegram:"Telegram bot",viewer:"Dashboard",alerts:"Alertas"}[k]||k}
+function serviceTone(running,state){if(running)return "ok";const s=String(state||"").toLowerCase();if(s.includes("loaded")||s.includes("cargado")||s.includes("exited"))return "warn";return "bad"}
+function statusTone(status){const s=String(status||"").toLowerCase();if(["completed","success","done","ok"].includes(s))return "ok";if(["queued","pending","active","running","processing"].includes(s))return "warn";return "bad"}
+function categoryLabel(category){
+  const labels={anime:"Anime",series:"Series",movies:"Películas"};
+  return labels[String(category||"").toLowerCase()]||category||"Sin categoría";
+}
+function statusLabel(status){
+  const s=String(status||"").toLowerCase();
+  const labels={
+    queued:"En cola",
+    active:"Descargando",
+    completed:"Completada",
+    failed:"Fallida",
+    success:"Correcto",
+    error:"Error",
+    pending:"Pendiente",
+    running:"En curso",
+    processing:"Procesando",
+    done:"Completada",
+    ok:"Correcto",
+    cancelled:"Cancelada",
+    canceled:"Cancelada",
+    paused:"Pausada"
+  };
+  return labels[s]||status||"—";
+}
+function progress(r){if(r.progress_percent==null)return '<span class="muted">—</span>';const p=Math.max(0,Math.min(100,Number(r.progress_percent)));return `<div class="progress"><div class="progress-track"><div class="progress-fill" style="width:${p}%"></div></div><div class="progress-label">${p.toFixed(1)}% · ${size(r.downloaded_bytes)} / ${size(r.size_bytes)}</div></div>`}
+function table(rows, cols){
+  if(!rows.length)return '<div class="empty">Sin datos todavía.</div>';
+  const head=`<thead><tr>${cols.map(c=>`<th>${esc(c[0])}</th>`).join("")}</tr></thead>`;
+  const body=`<tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td data-label="${esc(c[0])}">${c[1](r)}</td>`).join("")}</tr>`).join("")}</tbody>`;
+  return `<table>${head}${body}</table>`;
+}
+function embyStorageMeta(emby){
+  if(!emby.updated_at)return 'Sin fecha de lectura';
+  const d=new Date(emby.updated_at);
+  const when=isNaN(d)?String(emby.updated_at):d.toLocaleString('es-ES');
+  return `${emby.stale?'Último dato válido':'Última lectura'} · ${when}`;
+}
+function formatHistoryDate(value){
+  if(!value)return "—";
+  const d=new Date(value);
+  if(isNaN(d))return esc(String(value).replace("T"," ").replace("+00:00"," UTC"));
+  return esc(d.toLocaleString("es-ES"));
+}
+async function loadDashboard(){
+  const r=await fetch('/api/dashboard',{cache:'no-store'});
+  const d=await r.json();
+
+  document.getElementById('services').innerHTML=Object.entries(d.services).map(([k,v])=>{
+    const tone=serviceTone(v.running,v.state);
+    const label=v.running?'Operativo':(v.state||'parado');
+    return `<div class="service-card">
+      <div class="service-card__name">${esc(serviceLabel(k))}</div>
+      <div class="service-card__state ${tone}"><span class="dot"></span>${esc(label)}</div>
+      <div class="muted" style="margin-top:10px;font-size:12px">${v.running?'Servicio en ejecución':'Estado detectado: '+esc(v.state||'desconocido')}</div>
+    </div>`;
+  }).join('');
+
+  const h=d.summary.history_24h;
+  document.getElementById('hcount').textContent=h.count;
+  document.getElementById('hsuccess').textContent=h.success;
+  document.getElementById('herrors').textContent=h.errors;
+  document.getElementById('hdownloadbytes').textContent=size(h.downloaded_bytes);document.getElementById('hmovedbytes').textContent=size(h.moved_bytes);
+
+  document.getElementById('downloads').innerHTML=table(d.downloads,[
+    ['ID',r=>'<span class="mono">#'+r.id+'</span>'],
+    ['Nombre',r=>esc(r.name)],
+    ['Estado',r=>`<span class="pill ${statusTone(r.status)}">${esc(statusLabel(r.status))}</span>`],
+    ['Progreso',r=>progress(r)],
+    ['Tamaño',r=>size(r.size_bytes)],
+    ['Intento',r=>esc(r.attempt||0)]
+  ]);
+
+  document.getElementById('history').innerHTML=table(d.history,[
+    ['Fecha',r=>formatHistoryDate(r.created_at)],
+    ['Tipo',r=>esc(r.kind)],
+    ['Estado',r=>`<span class="pill ${statusTone(r.status)}">${esc(statusLabel(r.status))}</span>`],
+    ['Título',r=>esc(r.title||'—')],
+    ['Categoría',r=>esc(r.category||'—')],
+    ['Detalle',r=>esc(r.details||'—')]
+  ]);
+
+  const total=Number(d.disk.total||0), free=Number(d.disk.free||0), used=Math.max(0,total-free);
+  const usedPct=total>0 ? Math.min(100,(used*100/total)) : 0;
+  const emby=d.emby_disk||{};
+  let embyHtml='';
+  if(emby.available){
+    const eTotal=Number(emby.total||0),eFree=Number(emby.free||0),eUsed=Number(emby.used||0);
+    const ePct=eTotal>0?Math.min(100,eUsed*100/eTotal):0;
+    embyHtml=`<div class="storage-chip">
+      <strong>Servidor Emby</strong>
+      <div>${size(eFree)} libres de ${size(eTotal)}</div>
+      <div class="storage-bar"><div class="storage-bar__fill" style="width:${ePct}%"></div></div>
+      <div class="muted" style="margin-top:10px;font-size:12px">${ePct.toFixed(1)}% usado · ${size(eUsed)} ocupados</div>
+      <div class="muted" style="margin-top:6px;font-size:12px">${esc(embyStorageMeta(emby))}</div>
+      ${emby.stale&&emby.last_error?`<div class="warn" style="margin-top:6px;font-size:12px">Última actualización fallida: ${esc(emby.last_error)}</div>`:''}
+    </div>`;
+  }else{
+    embyHtml=`<div class="storage-chip">
+      <strong>Servidor Emby</strong>
+      <div class="warn">No se pudo consultar el espacio remoto</div>
+      <div class="muted" style="margin-top:8px;font-size:12px">${esc(emby.error||'Sin información')}</div>
+    </div>`;
+  }
+  document.getElementById('disk').innerHTML=`
+    <div class="storage-grid">
+      <div class="storage-chip">
+        <strong>Descargas locales</strong>
+        <div class="mono">${esc(d.disk.path)}</div>
+        <div style="margin-top:8px">${size(free)} libres de ${size(total)}</div>
+        <div class="storage-bar"><div class="storage-bar__fill" style="width:${usedPct}%"></div></div>
+        <div class="muted" style="margin-top:10px;font-size:12px">${usedPct.toFixed(1)}% usado · ${size(used)} ocupados</div>
+      </div>
+      ${embyHtml}
+    </div>`;
+
+  const st=d.statistics||{};
+  document.getElementById('statDownloaded').textContent=size(st.downloaded_bytes||0);
+  document.getElementById('statMoved').textContent=size(st.moved_bytes||0);
+  document.getElementById('statTotal').textContent=size(st.total_bytes||0);
+  document.getElementById('statDownloadCount').textContent=`${st.download_count||0} descargas completadas`;
+  document.getElementById('statMovedCount').textContent=`${st.moved_count||0} archivos enviados`;
+  document.getElementById('statSince').textContent=st.first_event?new Date(st.first_event).toLocaleDateString('es-ES'):'—';
+
+  document.getElementById('periodStats').innerHTML=table(st.periods||[],[
+    ['Periodo',r=>esc(r.label)],
+    ['Descargado',r=>size(r.downloaded_bytes)],
+    ['Movido a Emby',r=>size(r.moved_bytes)],
+    ['Descargas',r=>esc(r.download_count)],
+    ['Archivos Emby',r=>esc(r.moved_count)]
+  ]);
+
+  document.getElementById('categoryStats').innerHTML=table(st.categories||[],[
+    ['Biblioteca',r=>esc(categoryLabel(r.category))],
+    ['Datos',r=>size(r.bytes)],
+    ['Archivos',r=>esc(r.count)]
+  ]);
+  document.getElementById('updated').textContent='Actualizado · '+new Date().toLocaleTimeString('es-ES');
+}
+async function loadLogs(){
+  const lines=linesEl.value;
+  const r=await fetch(`/api/logs?lines=${lines}`,{cache:'no-store'});
+  const d=await r.json();
+  for(const [k,v] of Object.entries(d.logs)){
+    const el=document.getElementById(k);
+    const near=el.scrollHeight-el.scrollTop-el.clientHeight<80;
+    el.textContent=v||'(vacío)';
+    if(near)el.scrollTop=el.scrollHeight;
+  }
+}
+document.querySelectorAll('.tab').forEach(tab=>{
+  tab.addEventListener('click',()=>{
+    document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t===tab));
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+    const target=document.getElementById(`view-${tab.dataset.view}`);
+    if(target)target.classList.add('active');
+  });
+});
+const linesEl=document.getElementById('lines');
+linesEl.addEventListener('change',loadLogs);
+async function refreshAll(){
+  try{
+    await Promise.all([loadDashboard(),loadLogs()]);
+  }catch(e){
+    document.getElementById('updated').textContent='Error de actualización';
+    console.error(e);
+  }
+}
+refreshAll();
+setInterval(refreshAll, 3000);
+</script>
+</body>
+</html>'''
+
 
 
 def format_log_timestamps(text: str) -> str:
@@ -124,6 +766,121 @@ def service_state(label: str) -> dict:
         return {"running": False, "state": f"error: {exc}"}
 
 
+def download_progress(rows: list[dict]) -> list[dict]:
+    result = []
+    for row in rows:
+        item = dict(row)
+        total = item.get("size_bytes")
+        target = Path(item.get("target") or "")
+        try:
+            downloaded = target.stat().st_size if target.is_file() else 0
+        except OSError:
+            downloaded = 0
+
+        if item.get("status") == "completed" and total:
+            downloaded = max(downloaded, int(total))
+
+        item["downloaded_bytes"] = downloaded
+        if total and int(total) > 0:
+            item["progress_percent"] = round(
+                min(100.0, downloaded * 100.0 / int(total)),
+                1,
+            )
+        else:
+            item["progress_percent"] = None
+        result.append(item)
+    return result
+
+
+
+def emby_disk_info() -> dict:
+    """Consulta el filesystem remoto de Emby mediante la misma conexión SSH/SFTP."""
+    now = time.monotonic()
+    cached = _EMBY_DISK_CACHE.get("data")
+    if cached is not None and now - float(_EMBY_DISK_CACHE.get("at", 0)) < _EMBY_DISK_CACHE_SECONDS:
+        return cached
+
+    raw_url = next((url for url in EMBY_SFTP_URLS if url), "")
+    if not raw_url:
+        data = {"available": False, "error": "SFTP de Emby no configurado"}
+        _EMBY_DISK_CACHE.update(at=now, data=data)
+        return data
+
+    parsed = urlparse(raw_url)
+    if not parsed.hostname or not parsed.username or not parsed.path:
+        data = {"available": False, "error": "Configuración SFTP incompleta"}
+        _EMBY_DISK_CACHE.update(at=now, data=data)
+        return data
+
+    transport = None
+    last_error = None
+    try:
+        for key_path in (Path.home() / ".ssh" / "id_ed25519", Path.home() / ".ssh" / "id_rsa"):
+            if not key_path.exists():
+                continue
+            candidate = paramiko.Transport((parsed.hostname, parsed.port or 22))
+            try:
+                if key_path.name == "id_ed25519":
+                    pkey = paramiko.Ed25519Key.from_private_key_file(str(key_path))
+                else:
+                    pkey = paramiko.RSAKey.from_private_key_file(str(key_path))
+                candidate.connect(username=parsed.username, pkey=pkey)
+                transport = candidate
+                break
+            except Exception as exc:
+                last_error = exc
+                candidate.close()
+
+        if transport is None and EMBY_SFTP_PASSWORD:
+            transport = paramiko.Transport((parsed.hostname, parsed.port or 22))
+            transport.connect(username=parsed.username, password=EMBY_SFTP_PASSWORD)
+
+        if transport is None:
+            raise RuntimeError(last_error or "No hay credenciales SSH no interactivas disponibles")
+
+        channel = transport.open_session(timeout=6)
+        channel.exec_command(f"df -Pk {shlex.quote(parsed.path)}")
+        stdout = channel.makefile("r", -1).read()
+        stderr = channel.makefile_stderr("r", -1).read()
+        status = channel.recv_exit_status()
+        channel.close()
+
+        if status != 0:
+            raise RuntimeError(stderr.strip() or f"df terminó con código {status}")
+
+        lines = [line for line in stdout.splitlines() if line.strip()]
+        if len(lines) < 2:
+            raise RuntimeError("Respuesta de df incompleta")
+
+        parts = lines[-1].split()
+        if len(parts) < 6:
+            raise RuntimeError("Formato de df no reconocido")
+
+        total = int(parts[1]) * 1024
+        used = int(parts[2]) * 1024
+        free = int(parts[3]) * 1024
+
+        data = {
+            "available": True,
+            "path": parsed.path,
+            "total": total,
+            "used": used,
+            "free": free,
+            "used_percent": round((used * 100 / total), 1) if total else 0.0,
+        }
+    except Exception as exc:
+        data = {"available": False, "error": str(exc)}
+    finally:
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
+
+    _EMBY_DISK_CACHE.update(at=now, data=data)
+    return data
+
+
 def disk_info(path: Path) -> dict:
     probe = path if path.exists() else path.parent
     try:
@@ -164,9 +921,11 @@ class Handler(BaseHTTPRequestHandler):
             data = {
                 "services": {name: service_state(label) for name, label in SERVICES.items()},
                 "summary": dashboard_summary(),
-                "downloads": recent_downloads(20),
+                "statistics": dashboard_statistics(),
+                "downloads": download_progress(recent_downloads(20)),
                 "history": recent_history(40),
                 "disk": disk_info(GAME_DOWNLOAD_DIR),
+                "emby_disk": emby_storage_snapshot(),
             }
             self.send_bytes(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
             return
