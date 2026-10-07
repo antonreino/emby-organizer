@@ -16,7 +16,16 @@ from dotenv import load_dotenv
 
 APP_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(APP_DIR))
-from state_db import add_history, create_download, init_db, recover_pending_downloads, update_download
+from state_db import (
+    add_history,
+    claim_download_requests,
+    create_download,
+    finish_download_request,
+    init_db,
+    recover_download_requests,
+    recover_pending_downloads,
+    update_download,
+)
 
 ENV_FILE = APP_DIR / ".env"
 load_dotenv(ENV_FILE)
@@ -443,7 +452,7 @@ def enqueue_game_download(chat_id, raw_url: str):
     url = normalize_url(raw_url)
     if not url.lower().startswith(("http://", "https://")):
         send_message(chat_id, "❌ URL no válida.\nUso: /juego https://...")
-        return
+        return None
 
     probe = probe_game_url(url)
     name = probe["name"]
@@ -453,7 +462,7 @@ def enqueue_game_download(chat_id, raw_url: str):
     with DOWNLOAD_LOCK:
         if key in KNOWN_TARGETS:
             send_message(chat_id, f"⚠️ Esa descarga ya está activa o en cola:\n{name}")
-            return
+            return None
 
         queued_at = time.time()
         job_id = create_download(
@@ -493,6 +502,34 @@ def enqueue_game_download(chat_id, raw_url: str):
         send_message(chat_id, f"🕒 Descarga en cola #{job_id}:\n{name}\n📋 Posición: {position}")
 
     start_queued_downloads()
+    return job_id
+
+
+def dashboard_request_loop():
+    recover_download_requests()
+    while True:
+        try:
+            requests_to_process = claim_download_requests(5)
+            if not requests_to_process:
+                time.sleep(1)
+                continue
+            for request in requests_to_process:
+                try:
+                    job_id = enqueue_game_download(request["chat_id"], request["url"])
+                    if job_id is None:
+                        finish_download_request(
+                            request["id"], status="rejected",
+                            error="URL rechazada o descarga duplicada",
+                        )
+                    else:
+                        finish_download_request(request["id"], status="accepted")
+                        log(f"Dashboard -> descarga #{job_id} aceptada")
+                except Exception as exc:
+                    finish_download_request(request["id"], status="error", error=str(exc))
+                    log(f"Error procesando solicitud del dashboard #{request['id']}: {exc}")
+        except Exception as exc:
+            log(f"Error leyendo solicitudes del dashboard: {exc}")
+            time.sleep(3)
 
 
 def restore_persistent_queue():
@@ -643,6 +680,10 @@ def main():
     if recovered:
         log(f"Cola persistente recuperada -> {recovered}")
         start_queued_downloads()
+
+    request_thread = threading.Thread(target=dashboard_request_loop, daemon=True)
+    request_thread.start()
+    log("Cola de solicitudes del dashboard -> activa")
 
     offset = None
     while True:

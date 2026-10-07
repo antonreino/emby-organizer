@@ -19,17 +19,29 @@ from dotenv import load_dotenv
 
 APP_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(APP_DIR))
-from state_db import dashboard_statistics, dashboard_summary, emby_storage_snapshot, init_db, recent_downloads, recent_history
+from state_db import (
+    dashboard_statistics,
+    dashboard_summary,
+    emby_storage_snapshot,
+    init_db,
+    queue_download_request,
+    recent_downloads,
+    recent_history,
+)
 
 load_dotenv(APP_DIR / ".env")
 
 LOG_DIR = Path.home() / "Library" / "Logs"
-GAME_DOWNLOAD_DIR = Path(os.getenv("GAME_DOWNLOAD_DIR", str(Path.home() / "Downloads" / "Games"))).expanduser()
-PRICE_BOT_DIR = Path(os.getenv("PRICE_BOT_DIR", str(APP_DIR.parent / "ps5-price-bot"))).expanduser()
+GAME_DOWNLOAD_DIR = Path(os.getenv("GAME_DOWNLOAD_DIR") or "/Volumes/Datos/Descargas").expanduser()
+PRICE_BOT_DIR = Path(os.getenv("PRICE_BOT_DIR") or str(APP_DIR.parent / "ps5-price-bot")).expanduser()
 PRICE_BOT_DB = PRICE_BOT_DIR / "data" / "prices.sqlite3"
 PRICE_BOT_LOG = PRICE_BOT_DIR / "logs" / "bot.log"
+PRICE_BOT_CONFIG = PRICE_BOT_DIR / "config.json"
+TELEGRAM_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 _DOWNLOAD_SPEED_SAMPLES = {}
 _DOWNLOAD_SPEED_LOCK = threading.Lock()
+_NET_SAMPLE = None
+_METRICS_CACHE = {"at": 0.0, "value": None}
 LOGS = {
     "organizer_out": LOG_DIR / "emby-organizer.out.log",
     "organizer_err": LOG_DIR / "emby-organizer.err.log",
@@ -346,6 +358,31 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .deal-card__link{margin-top:auto;display:inline-flex;width:max-content;text-decoration:none;color:#d9e8ff;font-size:12px;font-weight:800}
 .deal-card__link:hover{text-decoration:underline}
 .deal-status{font-size:12px;color:var(--muted)}
+.download-form{display:flex;gap:10px;align-items:center;padding:16px 18px;border-bottom:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.025)}
+.download-form input{flex:1;min-width:0;height:44px;border-radius:12px;border:1px solid var(--border);background:rgba(0,0,0,.18);color:var(--text);padding:0 14px;font:inherit;outline:none}
+.download-form input:focus{border-color:rgba(110,168,255,.55);box-shadow:0 0 0 3px rgba(110,168,255,.10)}
+.download-form button{height:44px;border:0;border-radius:12px;padding:0 16px;background:linear-gradient(135deg,var(--accent),var(--accent-2));color:white;font:inherit;font-weight:800;cursor:pointer}
+.download-form__status{padding:0 18px 12px;font-size:12px;color:var(--muted);min-height:18px}
+.system-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin-bottom:18px}
+.system-card{padding:16px;border-radius:var(--radius);border:1px solid var(--border);background:var(--panel);box-shadow:var(--shadow)}
+.system-card__label{color:var(--muted);font-size:12px}
+.system-card__value{margin-top:8px;font-size:23px;font-weight:800;letter-spacing:-.03em}
+.system-card__hint{margin-top:6px;color:var(--muted);font-size:11px;line-height:1.35}
+.host-layout{display:grid;grid-template-columns:1.15fr .85fr;gap:18px;margin-bottom:18px}
+.host-panel{border:1px solid var(--border);border-radius:var(--radius);background:var(--panel);box-shadow:var(--shadow);overflow:hidden}
+.host-panel__head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid rgba(255,255,255,.06)}
+.host-panel__title{font-size:15px;font-weight:800}
+.host-panel__sub{font-size:11px;color:var(--muted);margin-top:3px}
+.host-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:16px}
+.host-metric{padding:14px;border-radius:16px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.025)}
+.host-metric__label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.host-metric__value{font-size:21px;font-weight:800;margin-top:7px;letter-spacing:-.03em}
+.host-metric__hint{font-size:11px;color:var(--muted);margin-top:5px;line-height:1.35}
+.host-storage{display:grid;gap:12px;padding:16px}
+.host-storage .storage-chip{margin:0}
+.host-note{padding:0 16px 16px;color:var(--muted);font-size:11px;line-height:1.45}
+@media (max-width:1220px){.system-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.host-layout{grid-template-columns:1fr}}
+@media (max-width:720px){.download-form{flex-direction:column;align-items:stretch}.system-grid{grid-template-columns:1fr}}
 @media (max-width:1220px){
   .services,.metrics,.stats-grid,.deal-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .layout,.logs{grid-template-columns:1fr}
@@ -446,19 +483,80 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
     </div>
   </section>
 
+  <section class="host-layout" aria-label="Estado de equipos">
+    <section class="host-panel">
+      <div class="host-panel__head">
+        <div>
+          <div class="host-panel__title">🖥️ Mac mini</div>
+          <div class="host-panel__sub">Sistema local · Apple Silicon</div>
+        </div>
+      </div>
+      <div class="host-metrics">
+        <div class="host-metric">
+          <div class="host-metric__label">CPU</div>
+          <div class="host-metric__value" id="sysCpu">—</div>
+          <div class="host-metric__hint">Uso total</div>
+        </div>
+        <div class="host-metric">
+          <div class="host-metric__label">GPU</div>
+          <div class="host-metric__value" id="sysGpu">—</div>
+          <div class="host-metric__hint" id="sysGpuHint">Apple Silicon</div>
+        </div>
+        <div class="host-metric">
+          <div class="host-metric__label">Memoria</div>
+          <div class="host-metric__value" id="sysRam">—</div>
+          <div class="host-metric__hint" id="sysRamHint">Memoria unificada</div>
+        </div>
+        <div class="host-metric">
+          <div class="host-metric__label">Temperatura</div>
+          <div class="host-metric__value" id="sysTemp">—</div>
+          <div class="host-metric__hint" id="sysTempHint">Sensor térmico</div>
+        </div>
+        <div class="host-metric" style="grid-column:1/-1">
+          <div class="host-metric__label">Red</div>
+          <div class="host-metric__value" id="sysNet">—</div>
+          <div class="host-metric__hint">Recepción y envío en tiempo real</div>
+        </div>
+      </div>
+      <div class="host-storage" id="macStorage"></div>
+      <div class="host-note" id="memoryNote"></div>
+    </section>
+
+    <section class="host-panel">
+      <div class="host-panel__head">
+        <div>
+          <div class="host-panel__title">🗄️ Servidor Emby</div>
+          <div class="host-panel__sub">Almacenamiento remoto</div>
+        </div>
+      </div>
+      <div class="host-storage" id="serverStorage"></div>
+    </section>
+  </section>
+
   <div class="layout">
     <section class="panel">
       <div class="panel__head">
         <h2 class="section-title">📥 Cola y descargas recientes <small>Estado y progreso en vivo</small></h2>
       </div>
+      <form class="download-form" id="downloadForm">
+        <input id="downloadUrl" type="url" autocomplete="off" placeholder="Pega aquí la URL directa del juego…" required>
+        <button type="submit">Descargar</button>
+      </form>
+      <div class="download-form__status" id="downloadFormStatus"></div>
       <div class="panel__body" id="downloads"></div>
     </section>
 
     <section class="panel">
       <div class="panel__head">
-        <h2 class="section-title">💾 Almacenamiento <small>Espacio disponible</small></h2>
+        <h2 class="section-title">ℹ️ Estado de descarga <small>Detalles útiles</small></h2>
       </div>
-      <div class="panel__body pad" id="disk"></div>
+      <div class="panel__body pad">
+        <div class="muted" style="line-height:1.7">
+          Las descargas directas usan el disco <strong style="color:var(--text)">Datos</strong>.
+          El tiempo restante se calcula con la velocidad observada y puede fluctuar durante los primeros segundos.
+          Telegram seguirá notificando inicio, reintentos, finalización y errores.
+        </div>
+      </div>
     </section>
   </div>
 
@@ -542,13 +640,20 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   </div>
 
   <div id="view-chollos" class="view">
-    <section class="panel" style="margin-bottom:18px;">
-      <div class="panel__head">
-        <h2 class="section-title">🔥 Ofertas activas <small>PS5 y Switch 2 · datos del bot de precios</small></h2>
-        <span class="deal-status" id="dealStatus">Cargando…</span>
-      </div>
-      <div class="panel__body pad"><div class="deal-grid" id="activeDeals"></div></div>
-    </section>
+    <div class="panel__head" style="margin-bottom:12px;">
+      <h2 class="section-title">🔥 Ofertas <small>datos del bot de precios</small></h2>
+      <span class="deal-status" id="dealStatus">Cargando…</span>
+    </div>
+    <div class="layout" style="margin-bottom:18px;">
+      <section class="panel">
+        <div class="panel__head"><h2 class="section-title">🎮 PS5 <small>ofertas activas</small></h2></div>
+        <div class="panel__body pad"><div class="deal-grid" id="activeDealsPs5"></div></div>
+      </section>
+      <section class="panel">
+        <div class="panel__head"><h2 class="section-title">🗡️ Switch Zelda <small>ofertas activas</small></h2></div>
+        <div class="panel__body pad"><div class="deal-grid" id="activeDealsSwitch"></div></div>
+      </section>
+    </div>
     <div class="layout">
       <section class="panel">
         <div class="panel__head"><h2 class="section-title">🧾 Historial <small>Avisos publicados</small></h2></div>
@@ -597,11 +702,20 @@ function statusLabel(status){
   };
   return labels[s]||status||"—";
 }
+function duration(seconds){
+  if(seconds==null||!isFinite(Number(seconds))||Number(seconds)<0)return "—";
+  let s=Math.round(Number(seconds)),h=Math.floor(s/3600);s%=3600;let m=Math.floor(s/60);s%=60;
+  if(h)return `${h} h ${m} min`;
+  if(m)return `${m} min ${s} s`;
+  return `${s} s`;
+}
 function progress(r){
   if(r.progress_percent==null)return '<span class="muted">—</span>';
   const p=Math.max(0,Math.min(100,Number(r.progress_percent)));
-  const speed=r.speed_bps!=null&&String(r.status).toLowerCase()==='active'?` · ${size(r.speed_bps)}/s`:'';
-  return `<div class="progress"><div class="progress-track"><div class="progress-fill" style="width:${p}%"></div></div><div class="progress-label">${p.toFixed(1)}% · ${size(r.downloaded_bytes)} / ${size(r.size_bytes)}${speed}</div></div>`;
+  const active=String(r.status).toLowerCase()==='active';
+  const speed=r.speed_bps!=null&&active?` · ${size(r.speed_bps)}/s`:'';
+  const eta=r.eta_seconds!=null&&active?` · quedan ~${duration(r.eta_seconds)}`:'';
+  return `<div class="progress"><div class="progress-track"><div class="progress-fill" style="width:${p}%"></div></div><div class="progress-label">${p.toFixed(1)}% · ${size(r.downloaded_bytes)} / ${size(r.size_bytes)}${speed}${eta}</div></div>`;
 }
 function table(rows, cols){
   if(!rows.length)return '<div class="empty">Sin datos todavía.</div>';
@@ -661,6 +775,26 @@ async function loadDashboard(){
 
   const total=Number(d.disk.total||0), free=Number(d.disk.free||0), used=Math.max(0,total-free);
   const usedPct=total>0 ? Math.min(100,(used*100/total)) : 0;
+  const internal=d.internal_disk||{};
+  const iTotal=Number(internal.total||0),iFree=Number(internal.free||0),iUsed=Math.max(0,iTotal-iFree);
+  const iPct=iTotal>0?Math.min(100,iUsed*100/iTotal):0;
+  const sys=d.system||{};
+  document.getElementById('sysCpu').textContent=sys.cpu_percent!=null?`${Number(sys.cpu_percent).toFixed(1)}%`:'—';
+  document.getElementById('sysGpu').textContent=sys.gpu_percent!=null?`${Number(sys.gpu_percent).toFixed(1)}%`:'N/D';
+  document.getElementById('sysGpuHint').textContent=sys.gpu_percent!=null?'Residencia activa GPU':(sys.powermetrics_note||'GPU no accesible');
+  document.getElementById('sysRam').textContent=sys.ram_percent!=null?`${Number(sys.ram_percent).toFixed(1)}%`:'—';
+  const pressure=sys.memory_free_percent!=null?` · ${Number(sys.memory_free_percent).toFixed(0)}% libre por memory_pressure`:'';
+  const swap=sys.swap_used?` · swap ${size(sys.swap_used)}`:'';
+  document.getElementById('sysRamHint').textContent=sys.ram_used!=null?`${size(sys.ram_used)} de ${size(sys.ram_total)}${pressure}${swap}`:'Memoria unificada';
+  document.getElementById('sysTemp').textContent=sys.temperature_c!=null?`${Number(sys.temperature_c).toFixed(1)} °C`:(sys.thermal_state||'N/D');
+  document.getElementById('sysTempHint').textContent=
+    sys.cpu_temperature_c!=null||sys.gpu_temperature_c!=null
+      ? `CPU ${sys.cpu_temperature_c!=null?Number(sys.cpu_temperature_c).toFixed(1)+' °C':'—'} · GPU ${sys.gpu_temperature_c!=null?Number(sys.gpu_temperature_c).toFixed(1)+' °C':'—'}`
+      : (sys.thermal_state?`Presión térmica: ${sys.thermal_state}`:(sys.powermetrics_note||'Sensor no accesible'));
+  document.getElementById('sysNet').textContent=`↓ ${size(sys.net_rx_bps||0)}/s · ↑ ${size(sys.net_tx_bps||0)}/s`;
+  document.getElementById('memoryNote').textContent=sys.memory_free_percent!=null
+    ? `macOS utiliza RAM libre como caché. Que el porcentaje ocupado sea alto no implica por sí solo falta de memoria; fíjate también en memory_pressure y en el uso de swap.`
+    : `macOS utiliza RAM libre como caché, por lo que un porcentaje ocupado alto no implica necesariamente falta de memoria.`;
   const emby=d.emby_disk||{};
   let embyHtml='';
   if(emby.available){
@@ -681,17 +815,24 @@ async function loadDashboard(){
       <div class="muted" style="margin-top:8px;font-size:12px">${esc(emby.error||'Sin información')}</div>
     </div>`;
   }
-  document.getElementById('disk').innerHTML=`
-    <div class="storage-grid">
-      <div class="storage-chip">
-        <strong>Descargas locales</strong>
-        <div class="mono">${esc(d.disk.path)}</div>
-        <div style="margin-top:8px">${size(free)} libres de ${size(total)}</div>
-        <div class="storage-bar"><div class="storage-bar__fill" style="width:${usedPct}%"></div></div>
-        <div class="muted" style="margin-top:10px;font-size:12px">${usedPct.toFixed(1)}% usado · ${size(used)} ocupados</div>
-      </div>
-      ${embyHtml}
+  document.getElementById('macStorage').innerHTML=`
+    <div class="storage-chip">
+      <strong>Disco interno · macOS</strong>
+      <div class="mono">${esc(internal.path||'/')}</div>
+      <div style="margin-top:8px">${size(iFree)} libres de ${size(iTotal)}</div>
+      <div class="storage-bar"><div class="storage-bar__fill" style="width:${iPct}%"></div></div>
+      <div class="muted" style="margin-top:10px;font-size:12px">${iPct.toFixed(1)}% usado · ${size(iUsed)} ocupados</div>
+    </div>
+    <div class="storage-chip">
+      <strong>Disco Datos · descargas</strong>
+      <div class="mono">${esc(d.disk.path)}</div>
+      <div style="margin-top:8px">${size(free)} libres de ${size(total)}</div>
+      <div class="storage-bar"><div class="storage-bar__fill" style="width:${usedPct}%"></div></div>
+      <div class="muted" style="margin-top:10px;font-size:12px">${usedPct.toFixed(1)}% usado · ${size(used)} ocupados</div>
     </div>`;
+
+  document.getElementById('serverStorage').innerHTML=embyHtml;
+
 
   const st=d.statistics||{};
   document.getElementById('statDownloaded').textContent=size(st.downloaded_bytes||0);
@@ -764,6 +905,30 @@ async function loadLogs(){
     if(near)el.scrollTop=el.scrollHeight;
   }
 }
+const downloadForm=document.getElementById('downloadForm');
+downloadForm.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const input=document.getElementById('downloadUrl');
+  const status=document.getElementById('downloadFormStatus');
+  const url=input.value.trim();
+  if(!url)return;
+  status.textContent='Enviando solicitud al bot…';
+  try{
+    const r=await fetch('/api/download',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({url})
+    });
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);
+    status.textContent=`Solicitud #${d.request_id} enviada. El bot la procesará y notificará por Telegram.`;
+    input.value='';
+    setTimeout(loadDashboard,1200);
+  }catch(err){
+    status.textContent='Error: '+err.message;
+  }
+});
+
 document.querySelectorAll('.tab').forEach(tab=>{
   tab.addEventListener('click',()=>{
     document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t===tab));
@@ -879,6 +1044,11 @@ def download_progress(rows: list[dict]) -> list[dict]:
         item["downloaded_bytes"] = downloaded
         item["speed_bps"] = round(speed_bps, 1) if speed_bps is not None else None
         item["progress_percent"] = round(min(100.0, downloaded * 100.0 / int(total)), 1) if total and int(total) > 0 else None
+        item["eta_seconds"] = (
+            round(max(0, int(total) - downloaded) / speed_bps)
+            if total and speed_bps is not None and speed_bps > 1 and downloaded < int(total)
+            else None
+        )
         result.append(item)
 
     with _DOWNLOAD_SPEED_LOCK:
@@ -903,6 +1073,242 @@ def _epoch_iso(value) -> str | None:
     from datetime import datetime, timezone
     return datetime.fromtimestamp(stamp, timezone.utc).isoformat(timespec="seconds")
 
+def _price_bot_policy() -> tuple[set[str] | None, float | None]:
+    try:
+        cfg = json.loads(PRICE_BOT_CONFIG.read_text(encoding="utf-8"))
+        enabled = {
+            str(source.get("name"))
+            for source in cfg.get("sources", [])
+            if source.get("enabled", True)
+        }
+        stale = float(cfg.get("stale_after_seconds", 0) or 0)
+        return enabled, stale if stale > 0 else None
+    except Exception:
+        return None, None
+
+
+def _parse_bytes(value: str) -> int | None:
+    match = re.match(r"\s*([0-9.]+)\s*([KMGT]?)(?:B)?\s*$", str(value), re.I)
+    if not match:
+        return None
+    factor = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}[match.group(2).upper()]
+    return int(float(match.group(1)) * factor)
+
+
+def _network_totals() -> tuple[int, int]:
+    proc = subprocess.run(
+        ["/usr/sbin/netstat", "-ibn"],
+        capture_output=True, text=True, timeout=2,
+    )
+    if proc.returncode != 0:
+        return 0, 0
+    lines = proc.stdout.splitlines()
+    if not lines:
+        return 0, 0
+    header = re.split(r"\s+", lines[0].strip())
+    try:
+        name_i, ibytes_i, obytes_i = header.index("Name"), header.index("Ibytes"), header.index("Obytes")
+    except ValueError:
+        return 0, 0
+    per_iface = {}
+    for line in lines[1:]:
+        cols = re.split(r"\s+", line.strip())
+        if len(cols) <= max(name_i, ibytes_i, obytes_i):
+            continue
+        name = cols[name_i]
+        if name == "lo0":
+            continue
+        try:
+            ibytes, obytes = int(cols[ibytes_i]), int(cols[obytes_i])
+        except ValueError:
+            continue
+        previous = per_iface.get(name, (0, 0))
+        per_iface[name] = (max(previous[0], ibytes), max(previous[1], obytes))
+    return sum(v[0] for v in per_iface.values()), sum(v[1] for v in per_iface.values())
+
+
+def _apple_silicon_metrics() -> dict:
+    """GPU y temperaturas en Apple Silicon.
+
+    Prioriza macmon porque expone GPU y temperaturas reales sin sudo.
+    Si no está instalado, cae a powermetrics para GPU + presión térmica.
+    """
+    macmon_candidates = [
+        Path("/opt/homebrew/bin/macmon"),
+        Path("/usr/local/bin/macmon"),
+    ]
+    macmon = next((path for path in macmon_candidates if path.exists()), None)
+
+    if macmon is not None:
+        try:
+            proc = subprocess.run(
+                [str(macmon), "pipe", "-s", "1", "-i", "250"],
+                capture_output=True, text=True, timeout=4,
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            if proc.returncode == 0 and lines:
+                data = json.loads(lines[-1])
+                temp = data.get("temp") or {}
+                cpu_temp = temp.get("cpu_temp_avg")
+                gpu_temp = temp.get("gpu_temp_avg")
+
+                gpu_active = data.get("gpu_active_ratio")
+                if gpu_active is None:
+                    gpu_usage = data.get("gpu_usage")
+                    if isinstance(gpu_usage, list) and len(gpu_usage) >= 2:
+                        gpu_active = gpu_usage[1]
+
+                return {
+                    "gpu_percent": float(gpu_active) * 100 if gpu_active is not None else None,
+                    "cpu_temperature_c": float(cpu_temp) if cpu_temp is not None else None,
+                    "gpu_temperature_c": float(gpu_temp) if gpu_temp is not None else None,
+                    "thermal_state": None,
+                    "note": "macmon",
+                }
+        except Exception:
+            pass
+
+    gpu_percent = None
+    thermal_state = None
+    note = "macmon no instalado"
+
+    try:
+        gpu_proc = subprocess.run(
+            ["/usr/bin/sudo", "-n", "/usr/bin/powermetrics",
+             "--samplers", "gpu_power", "-n", "1", "-i", "250"],
+            capture_output=True, text=True, timeout=4,
+        )
+        if gpu_proc.returncode == 0:
+            match = re.search(
+                r"GPU HW active residency:\s*([0-9.]+)%",
+                gpu_proc.stdout,
+                re.I,
+            )
+            if match:
+                gpu_percent = float(match.group(1))
+            note = "powermetrics"
+    except Exception:
+        pass
+
+    try:
+        thermal_proc = subprocess.run(
+            ["/usr/bin/sudo", "-n", "/usr/bin/powermetrics",
+             "--samplers", "thermal", "-n", "1", "-i", "250"],
+            capture_output=True, text=True, timeout=4,
+        )
+        if thermal_proc.returncode == 0:
+            match = re.search(
+                r"Current pressure level:\s*([A-Za-z]+)",
+                thermal_proc.stdout,
+                re.I,
+            )
+            if match:
+                thermal_state = match.group(1)
+    except Exception:
+        pass
+
+    return {
+        "gpu_percent": gpu_percent,
+        "cpu_temperature_c": None,
+        "gpu_temperature_c": None,
+        "thermal_state": thermal_state,
+        "note": note,
+    }
+
+def mac_system_snapshot() -> dict:
+    global _NET_SAMPLE, _METRICS_CACHE
+
+    now = time.monotonic()
+    cpu_percent = None
+    ram_total = None
+    ram_used = None
+
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/top", "-l", "1", "-n", "0"],
+            capture_output=True, text=True, timeout=3,
+        )
+        cpu = re.search(r"CPU usage:\s*([0-9.]+)% user,\s*([0-9.]+)% sys", proc.stdout)
+        if cpu:
+            cpu_percent = float(cpu.group(1)) + float(cpu.group(2))
+        phys = re.search(r"PhysMem:\s*([^ ]+) used.*?,\s*([^ ]+) unused", proc.stdout)
+        if phys:
+            ram_used = _parse_bytes(phys.group(1))
+            ram_free = _parse_bytes(phys.group(2))
+            if ram_used is not None and ram_free is not None:
+                ram_total = ram_used + ram_free
+    except Exception:
+        pass
+
+    memory_free_percent = None
+    swap_used = None
+    try:
+        mp = subprocess.run(
+            ["/usr/bin/memory_pressure", "-Q"],
+            capture_output=True, text=True, timeout=2,
+        )
+        m = re.search(r"free percentage:\s*([0-9.]+)%", mp.stdout, re.I)
+        if m:
+            memory_free_percent = float(m.group(1))
+    except Exception:
+        pass
+
+    try:
+        sw = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "vm.swapusage"],
+            capture_output=True, text=True, timeout=2,
+        )
+        m = re.search(r"used\s*=\s*([0-9.]+)([MGT])", sw.stdout, re.I)
+        if m:
+            factor = {"M": 1024**2, "G": 1024**3, "T": 1024**4}[m.group(2).upper()]
+            swap_used = int(float(m.group(1)) * factor)
+    except Exception:
+        pass
+
+    rx, tx = _network_totals()
+    rx_bps = tx_bps = 0.0
+    if _NET_SAMPLE is not None:
+        old_at, old_rx, old_tx = _NET_SAMPLE
+        elapsed = now - old_at
+        if elapsed > 0:
+            rx_bps = max(0.0, (rx - old_rx) / elapsed)
+            tx_bps = max(0.0, (tx - old_tx) / elapsed)
+    _NET_SAMPLE = (now, rx, tx)
+
+    if now - float(_METRICS_CACHE.get("at") or 0) >= 10 or _METRICS_CACHE.get("value") is None:
+        _METRICS_CACHE = {"at": now, "value": _apple_silicon_metrics()}
+    apple = _METRICS_CACHE["value"]
+
+    return {
+        "cpu_percent": round(cpu_percent, 1) if cpu_percent is not None else None,
+        "gpu_percent": round(apple.get("gpu_percent"), 1) if apple.get("gpu_percent") is not None else None,
+        "temperature_c": (
+            round(max(
+                x for x in (
+                    apple.get("cpu_temperature_c"),
+                    apple.get("gpu_temperature_c"),
+                ) if x is not None
+            ), 1)
+            if any(x is not None for x in (
+                apple.get("cpu_temperature_c"),
+                apple.get("gpu_temperature_c"),
+            ))
+            else None
+        ),
+        "cpu_temperature_c": round(apple.get("cpu_temperature_c"), 1) if apple.get("cpu_temperature_c") is not None else None,
+        "gpu_temperature_c": round(apple.get("gpu_temperature_c"), 1) if apple.get("gpu_temperature_c") is not None else None,
+        "thermal_state": apple.get("thermal_state"),
+        "ram_total": ram_total,
+        "ram_used": ram_used,
+        "ram_percent": round(ram_used * 100 / ram_total, 1) if ram_used is not None and ram_total else None,
+        "memory_free_percent": round(memory_free_percent, 1) if memory_free_percent is not None else None,
+        "swap_used": swap_used,
+        "net_rx_bps": round(rx_bps, 1),
+        "net_tx_bps": round(tx_bps, 1),
+        "powermetrics_note": apple.get("note"),
+    }
+
+
 def price_bot_snapshot(log_lines: int = 300) -> dict:
     log_text = tail(PRICE_BOT_LOG, log_lines)
     if not PRICE_BOT_DB.is_file():
@@ -912,9 +1318,15 @@ def price_bot_snapshot(log_lines: int = 300) -> dict:
         conn = sqlite3.connect(PRICE_BOT_DB, timeout=2)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only=ON")
-        rows = conn.execute("SELECT o.payload,o.seen FROM offers o JOIN sources s ON s.name=o.source WHERE o.active=1 AND s.ok=1 ORDER BY o.seen DESC LIMIT 250").fetchall()
+        rows = conn.execute("SELECT o.source,o.payload,o.seen FROM offers o JOIN sources s ON s.name=o.source WHERE o.active=1 AND s.ok=1 ORDER BY o.seen DESC LIMIT 250").fetchall()
+        enabled_sources, stale_after = _price_bot_policy()
+        cutoff = time.time() - stale_after if stale_after else None
         active = []
         for row in rows:
+            if enabled_sources is not None and row["source"] not in enabled_sources:
+                continue
+            if cutoff is not None and float(row["seen"] or 0) < cutoff:
+                continue
             try:
                 payload = json.loads(row["payload"])
             except (TypeError, json.JSONDecodeError):
@@ -985,11 +1397,52 @@ class Handler(BaseHTTPRequestHandler):
                 "downloads": download_progress(recent_downloads(20)),
                 "history": recent_history(40),
                 "disk": disk_info(GAME_DOWNLOAD_DIR),
+                "internal_disk": disk_info(Path("/")),
                 "emby_disk": emby_storage_snapshot(),
+                "system": mac_system_snapshot(),
             }
             self.send_bytes(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
             return
         self.send_error(404)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/download":
+            self.send_error(404)
+            return
+        if not TELEGRAM_CHAT_ID:
+            self.send_bytes(
+                json.dumps({"error": "TELEGRAM_CHAT_ID no configurado"}, ensure_ascii=False).encode("utf-8"),
+                "application/json; charset=utf-8", 503,
+            )
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 65536:
+            self.send_bytes(
+                json.dumps({"error": "Petición inválida"}, ensure_ascii=False).encode("utf-8"),
+                "application/json; charset=utf-8", 400,
+            )
+            return
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            url = str(payload.get("url") or "").strip()
+        except Exception:
+            url = ""
+        parsed_url = urlparse(url)
+        if len(url) > 8192 or parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+            self.send_bytes(
+                json.dumps({"error": "URL no válida"}, ensure_ascii=False).encode("utf-8"),
+                "application/json; charset=utf-8", 400,
+            )
+            return
+        request_id = queue_download_request(chat_id=TELEGRAM_CHAT_ID, url=url)
+        self.send_bytes(
+            json.dumps({"ok": True, "request_id": request_id}, ensure_ascii=False).encode("utf-8"),
+            "application/json; charset=utf-8", 202,
+        )
 
     def log_message(self, fmt, *args):
         pass

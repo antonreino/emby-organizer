@@ -64,8 +64,11 @@ Incluye:
 - GB descargados en las últimas 24 horas;
 - GB movidos a Emby en las últimas 24 horas;
 - cola y descargas recientes;
-- porcentaje de progreso y velocidad instantánea de cada descarga activa;
+- porcentaje de progreso, velocidad instantánea y tiempo restante estimado de cada descarga activa;
+- formulario local para pegar una URL y enviarla al mismo flujo de `/juego`, con notificaciones Telegram;
+- métricas del Mac mini: CPU, RAM, red y, cuando `powermetrics` está autorizado, GPU y temperatura;
 - almacenamiento local de descargas;
+- almacenamiento del disco interno de macOS;
 - almacenamiento del servidor Emby;
 - historial reciente;
 - pestaña **Chollos** integrada con `ps5-price-bot`, con ofertas activas separadas en **PS5** y **Switch Zelda**, historial, eventos técnicos y logs;
@@ -99,7 +102,20 @@ La integración es de **solo lectura**. El dashboard no abre el `.env` del bot d
 
 La pestaña muestra las ofertas activas en dos paneles independientes, **PS5** y **Switch Zelda**, además del historial de avisos publicados, errores/recuperaciones de fuentes y el log técnico.
 
-Puede configurarse otra ruta con `PRICE_BOT_DIR`. Si no se define, busca automáticamente `../ps5-price-bot`. SQLite se abre con `PRAGMA query_only=ON`.
+Puede configurarse otra ruta con `PRICE_BOT_DIR`. Si está ausente **o vacía**, busca automáticamente `../ps5-price-bot`. SQLite se abre con `PRAGMA query_only=ON`.
+
+## Descargas desde el dashboard
+
+El formulario del dashboard encola una URL en SQLite. El proceso `telegram-download-bot` recoge la solicitud y ejecuta exactamente el mismo flujo que `/juego`: sondeo de cabeceras, cola persistente, `curl`, reintentos y avisos de inicio/finalización/error por Telegram. El dashboard está enlazado únicamente a `127.0.0.1`.
+
+El tiempo restante es una estimación basada en el tamaño conocido y la velocidad observada por el dashboard. Puede fluctuar durante los primeros segundos o cuando cambia la velocidad.
+
+## Métricas del Mac mini
+
+Mac mini y servidor Emby se muestran en bloques separados para no mezclar almacenamiento local, métricas del sistema y estado del servidor remoto.
+
+
+CPU, RAM y tráfico de red se obtienen con utilidades estándar de macOS. Temperatura y uso de GPU se intentan leer con `powermetrics`; por seguridad el dashboard utiliza `sudo -n` y **nunca solicita contraseña**. Si `powermetrics` no tiene autorización no interactiva, esos dos valores aparecen como `N/D` sin afectar al resto del panel.
 
 ## Estadísticas
 

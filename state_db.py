@@ -88,6 +88,19 @@ def _initialize_once() -> None:
                 value TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS download_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_download_requests_status
+                ON download_requests(status, id);
                     """
                 )
             return
@@ -268,6 +281,72 @@ def update_download(job_id: int, **fields: Any) -> None:
     with closing(connect()) as conn, conn:
         conn.execute(f"UPDATE downloads SET {assignments} WHERE id = ?", values)
 
+
+
+def queue_download_request(*, chat_id: str, url: str) -> int:
+    init_db()
+    now = utc_now()
+    with closing(connect()) as conn, conn:
+        cur = conn.execute(
+            """
+            INSERT INTO download_requests (created_at, updated_at, chat_id, url, status)
+            VALUES (?, ?, ?, ?, 'pending')
+            """,
+            (now, now, str(chat_id), str(url)),
+        )
+        return int(cur.lastrowid)
+
+
+def recover_download_requests() -> None:
+    init_db()
+    now = utc_now()
+    with closing(connect()) as conn, conn:
+        conn.execute(
+            """
+            UPDATE download_requests
+            SET status='pending', updated_at=?, error=NULL
+            WHERE status='processing'
+            """,
+            (now,),
+        )
+
+
+def claim_download_requests(limit: int = 5) -> list[dict[str, Any]]:
+    init_db()
+    limit = max(1, min(int(limit), 20))
+    with closing(connect()) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            """
+            SELECT id, chat_id, url
+            FROM download_requests
+            WHERE status='pending'
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        if rows:
+            now = utc_now()
+            conn.executemany(
+                "UPDATE download_requests SET status='processing', updated_at=? WHERE id=?",
+                [(now, int(row["id"])) for row in rows],
+            )
+        conn.commit()
+    return [dict(row) for row in rows]
+
+
+def finish_download_request(request_id: int, *, status: str, error: str | None = None) -> None:
+    init_db()
+    with closing(connect()) as conn, conn:
+        conn.execute(
+            """
+            UPDATE download_requests
+            SET status=?, error=?, updated_at=?
+            WHERE id=?
+            """,
+            (str(status), error, utc_now(), int(request_id)),
+        )
 
 def recover_pending_downloads() -> list[dict[str, Any]]:
     init_db()
