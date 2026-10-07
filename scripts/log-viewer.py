@@ -4,9 +4,13 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
+import threading
+import time
 from collections import deque
+from html import unescape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -21,6 +25,11 @@ load_dotenv(APP_DIR / ".env")
 
 LOG_DIR = Path.home() / "Library" / "Logs"
 GAME_DOWNLOAD_DIR = Path(os.getenv("GAME_DOWNLOAD_DIR", str(Path.home() / "Downloads" / "Games"))).expanduser()
+PRICE_BOT_DIR = Path(os.getenv("PRICE_BOT_DIR", str(APP_DIR.parent / "ps5-price-bot"))).expanduser()
+PRICE_BOT_DB = PRICE_BOT_DIR / "data" / "prices.sqlite3"
+PRICE_BOT_LOG = PRICE_BOT_DIR / "logs" / "bot.log"
+_DOWNLOAD_SPEED_SAMPLES = {}
+_DOWNLOAD_SPEED_LOCK = threading.Lock()
 LOGS = {
     "organizer_out": LOG_DIR / "emby-organizer.out.log",
     "organizer_err": LOG_DIR / "emby-organizer.err.log",
@@ -327,8 +336,18 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .log-panel pre::-webkit-scrollbar{width:10px;height:10px}
 .log-panel pre::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:999px}
 .empty{padding:28px 20px;color:var(--muted)}
+.deal-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.deal-card{display:flex;flex-direction:column;gap:10px;min-height:210px;padding:18px;border-radius:18px;border:1px solid rgba(255,255,255,.07);background:linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.025))}
+.deal-card__top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.deal-card__family{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:#cfe1ff}
+.deal-card__price{font-size:28px;font-weight:850;letter-spacing:-.04em}
+.deal-card__title{font-size:14px;font-weight:700;line-height:1.35}
+.deal-card__meta{font-size:12px;color:var(--muted);line-height:1.55}
+.deal-card__link{margin-top:auto;display:inline-flex;width:max-content;text-decoration:none;color:#d9e8ff;font-size:12px;font-weight:800}
+.deal-card__link:hover{text-decoration:underline}
+.deal-status{font-size:12px;color:var(--muted)}
 @media (max-width:1220px){
-  .services,.metrics,.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .services,.metrics,.stats-grid,.deal-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .layout,.logs{grid-template-columns:1fr}
   .hero{flex-direction:column}
   .hero__side{width:100%}
@@ -338,7 +357,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   .app{width:min(100% - 18px, 1500px);margin:14px auto 28px}
   .hero{padding:20px}
   .hero h1{font-size:30px}
-  .services,.metrics,.stats-grid{grid-template-columns:1fr}
+  .services,.metrics,.stats-grid,.deal-grid{grid-template-columns:1fr}
   thead{display:none}
   table,tbody,tr,td{display:block;width:100%}
   tbody tr{padding:10px 0}
@@ -393,6 +412,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   <nav class="tabs" aria-label="Secciones del dashboard">
     <button class="tab active" data-view="inicio">Inicio</button>
     <button class="tab" data-view="estadisticas">Estadísticas</button>
+    <button class="tab" data-view="chollos">Chollos</button>
   </nav>
 
   <div id="view-inicio" class="view active">
@@ -520,6 +540,30 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
       </section>
     </div>
   </div>
+
+  <div id="view-chollos" class="view">
+    <section class="panel" style="margin-bottom:18px;">
+      <div class="panel__head">
+        <h2 class="section-title">🔥 Ofertas activas <small>PS5 y Switch 2 · datos del bot de precios</small></h2>
+        <span class="deal-status" id="dealStatus">Cargando…</span>
+      </div>
+      <div class="panel__body pad"><div class="deal-grid" id="activeDeals"></div></div>
+    </section>
+    <div class="layout">
+      <section class="panel">
+        <div class="panel__head"><h2 class="section-title">🧾 Historial <small>Avisos publicados</small></h2></div>
+        <div class="panel__body" id="dealHistory"></div>
+      </section>
+      <section class="panel">
+        <div class="panel__head"><h2 class="section-title">🛰 Eventos técnicos <small>Errores y recuperaciones</small></h2></div>
+        <div class="panel__body" id="dealEvents"></div>
+      </section>
+    </div>
+    <section class="panel log-panel">
+      <div class="panel__head"><h2 class="section-title">🛍 Bot de precios · log <small>PS5 + Switch 2</small></h2></div>
+      <pre id="dealLog">(cargando)</pre>
+    </section>
+  </div>
 </div>
 
 <script>
@@ -527,7 +571,7 @@ const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&
 function size(n){if(n==null)return "—";let v=Number(n),u=["B","KB","MB","GB","TB"],i=0;while(v>=1000&&i<u.length-1){v/=1000;i++}return `${v.toFixed(i?1:0)} ${u[i]}`}
 function serviceLabel(k){return {organizer:"Organizer",telegram:"Telegram bot",viewer:"Dashboard",alerts:"Alertas"}[k]||k}
 function serviceTone(running,state){if(running)return "ok";const s=String(state||"").toLowerCase();if(s.includes("loaded")||s.includes("cargado")||s.includes("exited"))return "warn";return "bad"}
-function statusTone(status){const s=String(status||"").toLowerCase();if(["completed","success","done","ok"].includes(s))return "ok";if(["queued","pending","active","running","processing"].includes(s))return "warn";return "bad"}
+function statusTone(status){const s=String(status||"").toLowerCase();if(["completed","success","done","ok"].includes(s))return "ok";if(["queued","pending","active","running","processing","quarantined"].includes(s))return "warn";return "bad"}
 function categoryLabel(category){
   const labels={anime:"Anime",series:"Series",movies:"Películas"};
   return labels[String(category||"").toLowerCase()]||category||"Sin categoría";
@@ -553,7 +597,12 @@ function statusLabel(status){
   };
   return labels[s]||status||"—";
 }
-function progress(r){if(r.progress_percent==null)return '<span class="muted">—</span>';const p=Math.max(0,Math.min(100,Number(r.progress_percent)));return `<div class="progress"><div class="progress-track"><div class="progress-fill" style="width:${p}%"></div></div><div class="progress-label">${p.toFixed(1)}% · ${size(r.downloaded_bytes)} / ${size(r.size_bytes)}</div></div>`}
+function progress(r){
+  if(r.progress_percent==null)return '<span class="muted">—</span>';
+  const p=Math.max(0,Math.min(100,Number(r.progress_percent)));
+  const speed=r.speed_bps!=null&&String(r.status).toLowerCase()==='active'?` · ${size(r.speed_bps)}/s`:'';
+  return `<div class="progress"><div class="progress-track"><div class="progress-fill" style="width:${p}%"></div></div><div class="progress-label">${p.toFixed(1)}% · ${size(r.downloaded_bytes)} / ${size(r.size_bytes)}${speed}</div></div>`;
+}
 function table(rows, cols){
   if(!rows.length)return '<div class="empty">Sin datos todavía.</div>';
   const head=`<thead><tr>${cols.map(c=>`<th>${esc(c[0])}</th>`).join("")}</tr></thead>`;
@@ -667,6 +716,31 @@ async function loadDashboard(){
   ]);
   document.getElementById('updated').textContent='Actualizado · '+new Date().toLocaleTimeString('es-ES');
 }
+
+function euroPrice(cents){if(cents==null)return "—";return new Intl.NumberFormat("es-ES",{style:"currency",currency:"EUR"}).format(Number(cents)/100)}
+function familyLabel(family){return family==="switch2"?"Switch 2 Zelda":"PS5"}
+function availabilityLabel(v){return {in_stock:"En stock",preorder:"Preventa / reserva",out_of_stock:"Agotado",unknown:"Stock por confirmar"}[v]||v||"—"}
+function kindLabel(v){return {retailer:"Tienda",comparison:"Comparador",deal:"Chollo"}[v]||v||"—"}
+function renderActiveDeals(rows){
+  if(!rows.length)return '<div class="empty" style="grid-column:1/-1">No hay ofertas activas disponibles.</div>';
+  return rows.map(o=>`<article class="deal-card">
+    <div class="deal-card__top"><div><div class="deal-card__family">${esc(familyLabel(o.family))} · ${esc(kindLabel(o.kind))}</div><div class="deal-card__price">${esc(euroPrice(o.price))}</div></div><span class="pill ${o.availability==='unknown'?'warn':'ok'}">${esc(availabilityLabel(o.availability))}</span></div>
+    <div class="deal-card__title">${esc(o.title||'Sin título')}</div>
+    <div class="deal-card__meta">${esc(o.source||'—')}${o.seller?' · '+esc(o.seller):''}<br>${o.shipping!=null?'Envío: '+esc(euroPrice(o.shipping)):'Envío por confirmar'}<br>Última lectura: ${formatHistoryDate(o.seen_iso)}</div>
+    <a class="deal-card__link" href="${esc(o.url||'#')}" target="_blank" rel="noopener noreferrer">Abrir oferta ↗</a>
+  </article>`).join('');
+}
+async function loadDeals(){
+  const r=await fetch(`/api/deals?lines=${linesEl.value}`,{cache:'no-store'}),d=await r.json();
+  const status=document.getElementById('dealStatus'),active=document.getElementById('activeDeals'),history=document.getElementById('dealHistory'),events=document.getElementById('dealEvents'),log=document.getElementById('dealLog');
+  if(!d.available){status.textContent='Bot no disponible';active.innerHTML=`<div class="empty" style="grid-column:1/-1">${esc(d.error||'No se encuentra el bot de precios.')}</div>`;history.innerHTML='<div class="empty">Sin datos.</div>';events.innerHTML='<div class="empty">Sin datos.</div>';log.textContent=d.log||'(sin log)';return}
+  status.textContent=`${d.active_offers.length} ofertas activas · ${d.history.length} avisos`;
+  active.innerHTML=renderActiveDeals(d.active_offers);
+  history.innerHTML=table(d.history,[['Fecha',r=>formatHistoryDate(r.created_iso)],['Aviso',r=>esc(r.body)]]);
+  events.innerHTML=table(d.events,[['Fecha',r=>formatHistoryDate(r.created_iso)],['Fuente',r=>esc(r.name)],['Estado',r=>`<span class="pill ${r.level==='error'?'bad':'ok'}">${esc(r.level==='error'?'Error':'Recuperada')}</span>`],['Detalle',r=>esc(r.detail)]]);
+  const near=log.scrollHeight-log.scrollTop-log.clientHeight<80;log.textContent=d.log||'(vacío)';if(near)log.scrollTop=log.scrollHeight;
+}
+
 async function loadLogs(){
   const lines=linesEl.value;
   const r=await fetch(`/api/logs?lines=${lines}`,{cache:'no-store'});
@@ -687,10 +761,10 @@ document.querySelectorAll('.tab').forEach(tab=>{
   });
 });
 const linesEl=document.getElementById('lines');
-linesEl.addEventListener('change',loadLogs);
+linesEl.addEventListener('change',()=>{loadLogs();loadDeals();});
 async function refreshAll(){
   try{
-    await Promise.all([loadDashboard(),loadLogs()]);
+    await Promise.all([loadDashboard(),loadLogs(),loadDeals()]);
   }catch(e){
     document.getElementById('updated').textContent='Error de actualización';
     console.error(e);
@@ -758,6 +832,8 @@ def service_state(label: str) -> dict:
 
 def download_progress(rows: list[dict]) -> list[dict]:
     result = []
+    now = time.monotonic()
+    active_ids = set()
     for row in rows:
         item = dict(row)
         total = item.get("size_bytes")
@@ -767,21 +843,81 @@ def download_progress(rows: list[dict]) -> list[dict]:
         except OSError:
             downloaded = 0
 
-        if item.get("status") == "completed" and total:
+        status = str(item.get("status") or "").lower()
+        if status == "completed" and total:
             downloaded = max(downloaded, int(total))
 
+        speed_bps = None
+        job_id = item.get("id")
+        if status == "active" and job_id is not None:
+            active_ids.add(job_id)
+            with _DOWNLOAD_SPEED_LOCK:
+                previous = _DOWNLOAD_SPEED_SAMPLES.get(job_id)
+                if previous is not None:
+                    previous_bytes, previous_at = previous
+                    elapsed = now - previous_at
+                    delta = downloaded - previous_bytes
+                    if elapsed >= 0.5 and delta >= 0:
+                        speed_bps = delta / elapsed
+                _DOWNLOAD_SPEED_SAMPLES[job_id] = (downloaded, now)
+        elif job_id is not None:
+            with _DOWNLOAD_SPEED_LOCK:
+                _DOWNLOAD_SPEED_SAMPLES.pop(job_id, None)
+
         item["downloaded_bytes"] = downloaded
-        if total and int(total) > 0:
-            item["progress_percent"] = round(
-                min(100.0, downloaded * 100.0 / int(total)),
-                1,
-            )
-        else:
-            item["progress_percent"] = None
+        item["speed_bps"] = round(speed_bps, 1) if speed_bps is not None else None
+        item["progress_percent"] = round(min(100.0, downloaded * 100.0 / int(total)), 1) if total and int(total) > 0 else None
         result.append(item)
+
+    with _DOWNLOAD_SPEED_LOCK:
+        for job_id in list(_DOWNLOAD_SPEED_SAMPLES):
+            if job_id not in active_ids:
+                _DOWNLOAD_SPEED_SAMPLES.pop(job_id, None)
     return result
 
 
+
+
+def _plain_telegram_html(value: str) -> str:
+    return unescape(re.sub(r"<[^>]+>", "", value or "")).strip()
+
+def _epoch_iso(value) -> str | None:
+    try:
+        stamp = float(value)
+    except (TypeError, ValueError):
+        return None
+    if stamp <= 0:
+        return None
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(stamp, timezone.utc).isoformat(timespec="seconds")
+
+def price_bot_snapshot(log_lines: int = 300) -> dict:
+    log_text = tail(PRICE_BOT_LOG, log_lines)
+    if not PRICE_BOT_DB.is_file():
+        return {"available": False, "error": f"No se encuentra la base de datos: {PRICE_BOT_DB}", "active_offers": [], "history": [], "events": [], "log": log_text}
+    conn = None
+    try:
+        conn = sqlite3.connect(PRICE_BOT_DB, timeout=2)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON")
+        rows = conn.execute("SELECT o.payload,o.seen FROM offers o JOIN sources s ON s.name=o.source WHERE o.active=1 AND s.ok=1 ORDER BY o.seen DESC LIMIT 250").fetchall()
+        active = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            payload["family"] = "switch2" if str(payload.get("model") or "").startswith("switch2") else "ps5"
+            payload["seen_iso"] = _epoch_iso(row["seen"])
+            active.append(payload)
+        history = [{"body": _plain_telegram_html(r["body"]), "created_iso": _epoch_iso(r["created"])} for r in conn.execute("SELECT body,created FROM published_notifications ORDER BY created DESC LIMIT 120")]
+        events = [{"name": r["name"], "level": r["level"], "detail": r["detail"], "created_iso": _epoch_iso(r["created"])} for r in conn.execute("SELECT name,level,detail,created FROM source_events ORDER BY id DESC LIMIT 100")]
+        return {"available": True, "active_offers": active, "history": history, "events": events, "log": log_text}
+    except sqlite3.Error as exc:
+        return {"available": False, "error": f"No se pudo leer SQLite del bot de precios: {exc}", "active_offers": [], "history": [], "events": [], "log": log_text}
+    finally:
+        if conn is not None:
+            conn.close()
 
 def disk_info(path: Path) -> dict:
     probe = path if path.exists() else path.parent
@@ -818,6 +954,16 @@ class Handler(BaseHTTPRequestHandler):
             lines = max(10, min(lines, 2000))
             body = json.dumps({"logs": {name: tail(path, lines) for name, path in LOGS.items()}}, ensure_ascii=False).encode("utf-8")
             self.send_bytes(body, "application/json; charset=utf-8")
+            return
+        if parsed.path == "/api/deals":
+            query = parse_qs(parsed.query)
+            try:
+                lines = int(query.get("lines", ["300"])[0])
+            except ValueError:
+                lines = 300
+            lines = max(10, min(lines, 2000))
+            data = price_bot_snapshot(lines)
+            self.send_bytes(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
             return
         if parsed.path == "/api/dashboard":
             data = {

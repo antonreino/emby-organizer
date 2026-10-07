@@ -64,10 +64,11 @@ Incluye:
 - GB descargados en las últimas 24 horas;
 - GB movidos a Emby en las últimas 24 horas;
 - cola y descargas recientes;
-- porcentaje de progreso de cada descarga;
+- porcentaje de progreso y velocidad instantánea de cada descarga activa;
 - almacenamiento local de descargas;
 - almacenamiento del servidor Emby;
 - historial reciente;
+- pestaña **Chollos** integrada con `ps5-price-bot`, con ofertas activas, historial, eventos técnicos y logs;
 - logs de Organizer y Telegram;
 - acceso directo al repositorio de GitHub;
 - interfaz responsive y en castellano.
@@ -81,6 +82,24 @@ El selector de líneas permite mostrar:
 ```
 
 líneas de log.
+
+## Integración con ps5-price-bot
+
+El dashboard puede leer el proyecto hermano `ps5-price-bot` para mostrar una tercera pestaña llamada **Chollos**.
+
+Por defecto se espera:
+
+```text
+Scripts/
+├── emby-organizer/
+└── ps5-price-bot/
+```
+
+La integración es de **solo lectura**. El dashboard no abre el `.env` del bot de precios ni accede a su token de Telegram. Lee únicamente `data/prices.sqlite3` y `logs/bot.log`.
+
+La pestaña muestra ofertas activas de PS5 y Switch 2 Zelda, historial de avisos publicados, errores/recuperaciones de fuentes y el log técnico.
+
+Puede configurarse otra ruta con `PRICE_BOT_DIR`. Si no se define, busca automáticamente `../ps5-price-bot`. SQLite se abre con `PRAGMA query_only=ON`.
 
 ## Estadísticas
 
@@ -298,6 +317,7 @@ El dashboard también muestra estos logs y permite seleccionar cuántas líneas 
 | `INBOX_DIR` | Carpeta vigilada por Organizer |
 | `TORRENT_DROP_DIR` | Destino de `.torrent` recibidos |
 | `GAME_DOWNLOAD_DIR` | Destino de `/juego` |
+| `PRICE_BOT_DIR` | Ruta opcional a `ps5-price-bot`; por defecto `../ps5-price-bot` |
 | `GAME_MAX_CONCURRENT` | Número máximo de descargas simultáneas |
 | `GAME_MAX_RETRIES` | Reintentos máximos por descarga |
 | `GAME_RETRY_DELAY` | Segundos entre reintentos |
