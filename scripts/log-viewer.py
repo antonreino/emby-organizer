@@ -721,8 +721,8 @@ function euroPrice(cents){if(cents==null)return "—";return new Intl.NumberForm
 function familyLabel(family){return family==="switch2"?"Switch 2 Zelda":"PS5"}
 function availabilityLabel(v){return {in_stock:"En stock",preorder:"Preventa / reserva",out_of_stock:"Agotado",unknown:"Stock por confirmar"}[v]||v||"—"}
 function kindLabel(v){return {retailer:"Tienda",comparison:"Comparador",deal:"Chollo"}[v]||v||"—"}
-function renderActiveDeals(rows){
-  if(!rows.length)return '<div class="empty" style="grid-column:1/-1">No hay ofertas activas disponibles.</div>';
+function renderActiveDeals(rows,emptyText="No hay ofertas activas disponibles."){
+  if(!rows.length)return `<div class="empty" style="grid-column:1/-1">${esc(emptyText)}</div>`;
   return rows.map(o=>`<article class="deal-card">
     <div class="deal-card__top"><div><div class="deal-card__family">${esc(familyLabel(o.family))} · ${esc(kindLabel(o.kind))}</div><div class="deal-card__price">${esc(euroPrice(o.price))}</div></div><span class="pill ${o.availability==='unknown'?'warn':'ok'}">${esc(availabilityLabel(o.availability))}</span></div>
     <div class="deal-card__title">${esc(o.title||'Sin título')}</div>
@@ -732,10 +732,22 @@ function renderActiveDeals(rows){
 }
 async function loadDeals(){
   const r=await fetch(`/api/deals?lines=${linesEl.value}`,{cache:'no-store'}),d=await r.json();
-  const status=document.getElementById('dealStatus'),active=document.getElementById('activeDeals'),history=document.getElementById('dealHistory'),events=document.getElementById('dealEvents'),log=document.getElementById('dealLog');
-  if(!d.available){status.textContent='Bot no disponible';active.innerHTML=`<div class="empty" style="grid-column:1/-1">${esc(d.error||'No se encuentra el bot de precios.')}</div>`;history.innerHTML='<div class="empty">Sin datos.</div>';events.innerHTML='<div class="empty">Sin datos.</div>';log.textContent=d.log||'(sin log)';return}
-  status.textContent=`${d.active_offers.length} ofertas activas · ${d.history.length} avisos`;
-  active.innerHTML=renderActiveDeals(d.active_offers);
+  const status=document.getElementById('dealStatus'),ps5=document.getElementById('activeDealsPs5'),sw=document.getElementById('activeDealsSwitch'),history=document.getElementById('dealHistory'),events=document.getElementById('dealEvents'),log=document.getElementById('dealLog');
+  if(!d.available){
+    status.textContent='Bot no disponible';
+    const msg=`<div class="empty" style="grid-column:1/-1">${esc(d.error||'No se encuentra el bot de precios.')}</div>`;
+    ps5.innerHTML=msg;
+    sw.innerHTML=msg;
+    history.innerHTML='<div class="empty">Sin datos.</div>';
+    events.innerHTML='<div class="empty">Sin datos.</div>';
+    log.textContent=d.log||'(sin log)';
+    return;
+  }
+  const ps5Offers=d.active_offers.filter(o=>o.family==='ps5');
+  const switchOffers=d.active_offers.filter(o=>o.family==='switch2');
+  status.textContent=`${ps5Offers.length} PS5 · ${switchOffers.length} Switch Zelda`;
+  ps5.innerHTML=renderActiveDeals(ps5Offers,'No hay ofertas activas de PS5.');
+  sw.innerHTML=renderActiveDeals(switchOffers,'No hay ofertas activas de Switch Zelda.');
   history.innerHTML=table(d.history,[['Fecha',r=>formatHistoryDate(r.created_iso)],['Aviso',r=>esc(r.body)]]);
   events.innerHTML=table(d.events,[['Fecha',r=>formatHistoryDate(r.created_iso)],['Fuente',r=>esc(r.name)],['Estado',r=>`<span class="pill ${r.level==='error'?'bad':'ok'}">${esc(r.level==='error'?'Error':'Recuperada')}</span>`],['Detalle',r=>esc(r.detail)]]);
   const near=log.scrollHeight-log.scrollTop-log.clientHeight<80;log.textContent=d.log||'(vacío)';if(near)log.scrollTop=log.scrollHeight;

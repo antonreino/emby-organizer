@@ -68,7 +68,7 @@ Incluye:
 - almacenamiento local de descargas;
 - almacenamiento del servidor Emby;
 - historial reciente;
-- pestaña **Chollos** integrada con `ps5-price-bot`, con ofertas activas, historial, eventos técnicos y logs;
+- pestaña **Chollos** integrada con `ps5-price-bot`, con ofertas activas separadas en **PS5** y **Switch Zelda**, historial, eventos técnicos y logs;
 - logs de Organizer y Telegram;
 - acceso directo al repositorio de GitHub;
 - interfaz responsive y en castellano.
@@ -97,7 +97,7 @@ Scripts/
 
 La integración es de **solo lectura**. El dashboard no abre el `.env` del bot de precios ni accede a su token de Telegram. Lee únicamente `data/prices.sqlite3` y `logs/bot.log`.
 
-La pestaña muestra ofertas activas de PS5 y Switch 2 Zelda, historial de avisos publicados, errores/recuperaciones de fuentes y el log técnico.
+La pestaña muestra las ofertas activas en dos paneles independientes, **PS5** y **Switch Zelda**, además del historial de avisos publicados, errores/recuperaciones de fuentes y el log técnico.
 
 Puede configurarse otra ruta con `PRICE_BOT_DIR`. Si no se define, busca automáticamente `../ps5-price-bot`. SQLite se abre con `PRAGMA query_only=ON`.
 
