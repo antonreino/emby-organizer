@@ -548,7 +548,8 @@ function statusLabel(status){
     ok:"Correcto",
     cancelled:"Cancelada",
     canceled:"Cancelada",
-    paused:"Pausada"
+    paused:"Pausada",
+    quarantined:"Cuarentena",
   };
   return labels[s]||status||"—";
 }
