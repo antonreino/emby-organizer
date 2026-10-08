@@ -485,10 +485,3 @@ http://127.0.0.1:8765
 ## Licencia
 
 Consulta `LICENSE`.
-
-
-## Dashboard móvil y app web
-
-El Dashboard incluye un diseño responsive específico para escritorio, tablet y móvil. En iPhone/iPad utiliza `viewport-fit=cover`, respeta las áreas seguras, reorganiza métricas y formularios y transforma las tablas en tarjetas para pantallas estrechas.
-
-También incluye un Web App Manifest e icono para instalar `https://dashboard.tonecas.ovh` como app web desde Safari mediante **Compartir → Añadir a pantalla de inicio → Abrir como app web**. La autenticación HTTP del Dashboard sigue siendo obligatoria cuando se publica fuera de localhost.

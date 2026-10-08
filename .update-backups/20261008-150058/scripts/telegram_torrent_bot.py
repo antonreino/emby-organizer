@@ -16,7 +16,6 @@ from dotenv import load_dotenv
 
 APP_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(APP_DIR))
-from torrent_utils import is_torrent_file, safe_torrent_name, unique_target
 from state_db import (
     add_history,
     claim_download_requests,
@@ -136,12 +135,43 @@ def logs_message(target: str = "organizer") -> str:
     return message
 
 
+def is_torrent_bytes(path: Path) -> bool:
+    try:
+        data = path.read_bytes()[:4096]
+        return data.startswith(b"d") and b"announce" in data
+    except Exception:
+        return False
+
+
+def safe_torrent_name(name: str) -> str:
+    name = name.replace("/", "_").replace("\\", "_").strip()
+    if not name:
+        name = f"telegram-{int(time.time())}.torrent"
+    if not name.lower().endswith(".torrent"):
+        name += ".torrent"
+    return name
+
 
 def safe_filename(name: str) -> str:
     name = unquote(name or "").strip().strip('"').strip("'")
     name = Path(name).name.replace("/", "_").replace("\\", "_")
     return name or f"descarga-{int(time.time())}"
 
+
+def unique_target(directory: Path, filename: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / filename
+    if not target.exists():
+        return target
+
+    stem = target.stem
+    suffix = target.suffix
+    i = 1
+    while True:
+        candidate = directory / f"{stem}-{i}{suffix}"
+        if not candidate.exists():
+            return candidate
+        i += 1
 
 
 def download_torrent_file(file_id, filename):
@@ -161,7 +191,7 @@ def download_torrent_file(file_id, filename):
 
     tmp.rename(target)
 
-    if not is_torrent_file(target):
+    if not is_torrent_bytes(target):
         bad = target.with_suffix(target.suffix + ".rechazado")
         target.rename(bad)
         return None, bad
@@ -635,10 +665,6 @@ def handle_message(msg):
         log(f"Archivo rechazado: {rejected}")
         return
 
-    add_history(
-        "torrent", "success", title=target.name, source_path="telegram",
-        destination=str(target.parent), details="Torrent recibido por Telegram", size_bytes=target.stat().st_size,
-    )
     send_message(chat_id, f"✅ Torrent recibido:\n{target.name}\n📁 {target.parent}")
     log(f"Torrent guardado: {target}")
 

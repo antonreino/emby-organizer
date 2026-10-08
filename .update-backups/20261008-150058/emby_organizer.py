@@ -17,10 +17,7 @@ from urllib.parse import urlparse
 import requests
 from dotenv import load_dotenv
 
-from state_db import (
-    add_history, init_db, mark_emby_storage_error, mark_emby_system_error,
-    save_emby_storage, save_emby_system,
-)
+from state_db import add_history, init_db, mark_emby_storage_error, save_emby_storage
 
 try:
     import paramiko
@@ -38,7 +35,6 @@ INBOX_DIR = Path(os.environ.get("INBOX_DIR", str(Path.home() / "Documents" / "To
 STABLE_SECONDS = 180
 SCAN_INTERVAL_SECONDS = 30
 EMBY_STORAGE_REFRESH_SECONDS = int(os.environ.get("EMBY_STORAGE_REFRESH_SECONDS", "300"))
-EMBY_SYSTEM_REFRESH_SECONDS = int(os.environ.get("EMBY_SYSTEM_REFRESH_SECONDS", "60"))
 LOG_FILE = Path.home() / ".local" / "share" / "emby_organizer" / "organizer.log"
 STATE_DIR = Path.home() / ".local" / "share" / "emby_organizer"
 QUARANTINE_LOCAL_DIR = INBOX_DIR / "NoClasificado"
@@ -306,70 +302,6 @@ class SftpUploader:
             finally:
                 channel.close()
 
-    def system_info(self, category: str = "movies") -> dict:
-        """Obtiene CPU, RAM y carga del host Linux remoto usando la conexión SSH ya abierta."""
-        self._connect(category)
-        if self._transport is None:
-            raise OrganizerError("No hay transporte SSH disponible")
-
-        channel = self._transport.open_session(timeout=8)
-        try:
-            channel.exec_command("cat /proc/stat | head -1; sleep 0.25; cat /proc/stat | head -1; cat /proc/meminfo; cat /proc/loadavg")
-            stdout = channel.makefile("r", -1).read()
-            stderr = channel.makefile_stderr("r", -1).read()
-            status = channel.recv_exit_status()
-            if status != 0:
-                raise OrganizerError(stderr.strip() or f"lectura de métricas terminó con código {status}")
-            if isinstance(stdout, bytes):
-                stdout = stdout.decode("utf-8", errors="replace")
-
-            lines = [line.strip() for line in stdout.splitlines() if line.strip()]
-            cpu_lines = [line for line in lines if line.startswith("cpu ")]
-            if len(cpu_lines) < 2:
-                raise OrganizerError("No se pudieron leer dos muestras de /proc/stat")
-
-            def cpu_values(line: str):
-                values = [int(v) for v in line.split()[1:]]
-                total = sum(values)
-                idle = (values[3] if len(values) > 3 else 0) + (values[4] if len(values) > 4 else 0)
-                return total, idle
-
-            total1, idle1 = cpu_values(cpu_lines[0])
-            total2, idle2 = cpu_values(cpu_lines[1])
-            delta_total = max(1, total2 - total1)
-            delta_idle = max(0, idle2 - idle1)
-            cpu_percent = max(0.0, min(100.0, (delta_total - delta_idle) * 100.0 / delta_total))
-
-            mem = {}
-            for line in lines:
-                if ":" not in line:
-                    continue
-                key, value = line.split(":", 1)
-                match = re.search(r"(\d+)", value)
-                if match:
-                    mem[key] = int(match.group(1)) * 1024
-            ram_total = int(mem.get("MemTotal", 0))
-            ram_available = int(mem.get("MemAvailable", mem.get("MemFree", 0)))
-            ram_used = max(0, ram_total - ram_available)
-            if not ram_total:
-                raise OrganizerError("No se pudo leer MemTotal de /proc/meminfo")
-
-            load_line = next((line for line in reversed(lines) if re.match(r"^\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s", line)), "")
-            if not load_line:
-                raise OrganizerError("No se pudo leer /proc/loadavg")
-            loads = [float(x) for x in load_line.split()[:3]]
-            return {
-                "cpu_percent": cpu_percent,
-                "ram_total": ram_total,
-                "ram_used": ram_used,
-                "ram_available": ram_available,
-                "load_1": loads[0],
-                "load_5": loads[1],
-                "load_15": loads[2],
-            }
-        finally:
-            channel.close()
-
     def ensure_remote_dir(self, category: str, remote_dir: str):
         def op(sftp):
             parts = [p for p in remote_dir.strip("/").split("/") if p]
@@ -441,7 +373,6 @@ class MediaOrganizer:
         self.dry_run = dry_run
         self.uploader = SftpUploader(LIBRARIES)
         self._last_storage_refresh = 0.0
-        self._last_system_refresh = 0.0
         self._ensure_dirs()
 
     def _ensure_dirs(self):
@@ -476,27 +407,6 @@ class MediaOrganizer:
         except Exception as exc:
             mark_emby_storage_error(str(exc))
             logging.warning("No se pudo actualizar el espacio de Emby: %s", exc)
-
-    def refresh_emby_system(self, force: bool = False):
-        now = time.monotonic()
-        if (
-            not force
-            and self._last_system_refresh
-            and now - self._last_system_refresh < EMBY_SYSTEM_REFRESH_SECONDS
-        ):
-            return
-        self._last_system_refresh = now
-        try:
-            info = self.uploader.system_info("movies")
-            save_emby_system(**info)
-            logging.info(
-                "Servidor Emby: CPU %.1f%% · RAM %.1f%%",
-                info["cpu_percent"],
-                (info["ram_used"] * 100 / info["ram_total"]) if info["ram_total"] else 0,
-            )
-        except Exception as exc:
-            mark_emby_system_error(str(exc))
-            logging.warning("No se pudieron actualizar CPU/RAM de Emby: %s", exc)
 
     def shutdown(self):
         self.uploader.close()
@@ -1153,7 +1063,6 @@ class MediaOrganizer:
         while True:
             try:
                 self.refresh_emby_storage()
-                self.refresh_emby_system()
                 self.scan_once()
             except Exception as exc:
                 logging.exception("Error durante el escaneo")
@@ -1197,7 +1106,6 @@ def main():
     try:
         if args.scan_once:
             organizer.refresh_emby_storage(force=True)
-            organizer.refresh_emby_system(force=True)
             organizer.scan_once()
         elif args.daemon:
             organizer.run_daemon()

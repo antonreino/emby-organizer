@@ -71,14 +71,7 @@ HTML = r'''<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#07111f">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Emby Dashboard">
-<meta name="mobile-web-app-capable" content="yes">
-<link rel="manifest" href="/manifest.webmanifest">
-<link rel="apple-touch-icon" href="/app-icon.png">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Emby Automation · Dashboard</title>
 <style>
 :root{
@@ -425,92 +418,6 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
     content:attr(data-label);color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em;
   }
 }
-
-/* Responsive v3 · tablet + iPhone */
-@media (max-width:1024px){
-  body{background-attachment:fixed}
-  .app{width:min(100% - 24px, 980px);margin:18px auto 34px}
-  .hero{padding:22px;border-radius:24px;gap:16px}
-  .hero h1{font-size:34px}
-  .hero__side{min-width:0;width:100%}
-  .controls{display:grid;grid-template-columns:1fr 1fr;justify-content:stretch}
-  .github-link,.select-wrap,.button{width:100%;justify-content:center}
-  .github-link{grid-column:1/-1}
-  .tabs{max-width:100%;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
-  .tabs::-webkit-scrollbar{display:none}
-  .tab{flex:1 0 auto;min-height:44px;white-space:nowrap}
-  .services{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .metrics,.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .host-layout,.layout,.logs{grid-template-columns:1fr}
-  .host-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
-  .host-metric[style*="grid-column"]{grid-column:auto!important}
-  .deal-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .panel,.host-panel,.service-card,.metric-card,.system-card{min-width:0}
-  .panel__body{overflow-x:auto;-webkit-overflow-scrolling:touch}
-  .log-panel pre{max-height:36vh}
-}
-
-@media (max-width:600px){
-  html{background:#050b16}
-  body{padding:0;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);overflow-x:hidden}
-  body::before{background-size:22px 22px}
-  .app{width:100%;margin:0;padding:10px max(10px,env(safe-area-inset-right)) 24px max(10px,env(safe-area-inset-left))}
-  .hero{padding:17px;margin-bottom:12px;border-radius:20px}
-  .eyebrow{font-size:10px;padding:7px 10px}
-  .hero h1{font-size:27px;line-height:1.08;margin:12px 0 7px}
-  .hero p{font-size:13px;line-height:1.5}
-  .status-badge{padding:12px 13px;border-radius:15px;align-items:flex-start;flex-direction:column}
-  .status-badge #updated{min-width:0;text-align:left;white-space:normal;font-size:12px}
-  .controls{grid-template-columns:1fr;gap:8px}
-  .github-link{grid-column:auto}
-  .github-link,.select-wrap,.button{min-height:46px;border-radius:14px}
-  .tabs{position:sticky;top:max(8px,env(safe-area-inset-top));z-index:20;margin-bottom:12px;padding:5px;border-radius:14px;background:rgba(7,17,31,.93);box-shadow:0 10px 30px rgba(0,0,0,.34)}
-  .tab{padding:9px 12px;font-size:13px}
-  .services,.metrics,.stats-grid,.deal-grid,.system-grid{grid-template-columns:1fr}
-  .host-metrics{grid-template-columns:repeat(2,minmax(0,1fr));padding:12px;gap:9px}
-  .host-metric{padding:12px;border-radius:14px}
-  .host-metric[style*="grid-column"]{grid-column:1/-1!important}
-  .host-metric__value{font-size:19px}
-  .host-panel__head,.panel__head{padding:14px 15px}
-  .host-storage{padding:12px}
-  .host-note{padding:0 12px 12px}
-  .service-card,.metric-card,.system-card{padding:15px;border-radius:17px}
-  .metric-card__value,.stat-big{font-size:29px}
-  .panel,.host-panel{border-radius:18px}
-  .section-title{align-items:flex-start;flex-direction:column;gap:3px;font-size:15px}
-  .section-title small{line-height:1.35}
-  .panel__body.pad{padding:14px}
-  .storage-chip{padding:14px;border-radius:15px}
-  .download-form,.torrent-form{padding:13px;gap:9px}
-  .download-form input,.download-form button,.torrent-form button{width:100%;min-height:46px}
-  .torrent-form input[type=file]{width:100%;padding:6px 0}
-  .torrent-form input[type=file]::file-selector-button{max-width:100%;margin:0 8px 6px 0}
-  .download-form__status,.torrent-form__status{padding:0 13px 11px;line-height:1.45}
-  .deal-card{min-height:0;padding:15px}
-  .deal-card__price{font-size:25px}
-  .progress{min-width:0;width:100%}
-  .progress-label{white-space:normal;line-height:1.45}
-  thead{display:none}
-  table,tbody,tr,td{display:block;width:100%}
-  table{font-size:13px}
-  tbody{padding:8px}
-  tbody tr{padding:8px 0;margin:0 0 8px;border:1px solid rgba(255,255,255,.06);border-radius:14px;background:rgba(255,255,255,.025);overflow:hidden}
-  tbody td{display:grid;grid-template-columns:minmax(92px,.42fr) minmax(0,1fr);align-items:start;gap:10px;padding:8px 11px;border-bottom:1px solid rgba(255,255,255,.04);overflow-wrap:anywhere}
-  tbody td:last-child{border-bottom:0}
-  tbody td::before{content:attr(data-label);color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em;font-weight:700}
-  .logs{gap:12px}
-  .log-panel pre{min-height:180px;max-height:38vh;padding:14px;font-size:11px;line-height:1.5}
-  .empty{padding:20px 14px}
-}
-
-@media (max-width:390px){
-  .app{padding-left:8px;padding-right:8px}
-  .hero{padding:15px}
-  .hero h1{font-size:24px}
-  .host-metrics{grid-template-columns:1fr}
-  .host-metric[style*="grid-column"]{grid-column:auto!important}
-  tbody td{grid-template-columns:1fr;gap:4px}
-}
 </style>
 </head>
 <body>
@@ -519,7 +426,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
     <div class="hero__main">
       <div class="eyebrow">Emby Automation · Dashboard</div>
       <h1>Control total, limpio y moderno</h1>
-      <p>Estado de servicios, descargas, historial y logs en tiempo real, optimizado para Mac, iPad y iPhone.</p>
+      <p>Estado de servicios, descargas, historial y logs en tiempo real, con una interfaz más actual y cómoda para usar desde el Mac.</p>
     </div>
     <div class="hero__side">
       <div class="status-badge">
@@ -1512,21 +1419,6 @@ def disk_info(path: Path) -> dict:
         return {"path": str(path), "exists": False, "total": 0, "used": 0, "free": 0}
 
 
-PWA_MANIFEST = json.dumps({
-    "name": "Emby Automation Dashboard",
-    "short_name": "Emby",
-    "start_url": "/",
-    "scope": "/",
-    "display": "standalone",
-    "background_color": "#07111f",
-    "theme_color": "#07111f",
-    "description": "Dashboard privado de Emby Automation",
-    "icons": [
-        {"src": "/app-icon.png", "sizes": "180x180", "type": "image/png"},
-        {"src": "/app-icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
-    ]
-}, ensure_ascii=False)
-
 class Handler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         if not DASHBOARD_USER and not DASHBOARD_PASSWORD:
@@ -1568,16 +1460,6 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self.send_bytes(HTML.encode("utf-8"), "text/html; charset=utf-8")
-            return
-        if parsed.path == "/manifest.webmanifest":
-            self.send_bytes(PWA_MANIFEST.encode("utf-8"), "application/manifest+json; charset=utf-8")
-            return
-        if parsed.path == "/app-icon.png":
-            icon_path = APP_DIR / "static" / "app-icon.png"
-            if icon_path.is_file():
-                self.send_bytes(icon_path.read_bytes(), "image/png")
-            else:
-                self.send_error(404)
             return
         if parsed.path == "/health":
             self.send_bytes(b"ok", "text/plain")

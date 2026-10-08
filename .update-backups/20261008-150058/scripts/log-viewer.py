@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import base64
-import hmac
 import json
 import os
 import re
@@ -15,7 +13,7 @@ from collections import deque
 from html import unescape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 
@@ -25,24 +23,16 @@ from state_db import (
     dashboard_statistics,
     dashboard_summary,
     emby_storage_snapshot,
-    emby_system_snapshot,
-    add_history,
     init_db,
     queue_download_request,
     recent_downloads,
     recent_history,
 )
-from torrent_utils import save_torrent_bytes
 
 load_dotenv(APP_DIR / ".env")
 
 LOG_DIR = Path.home() / "Library" / "Logs"
 GAME_DOWNLOAD_DIR = Path(os.getenv("GAME_DOWNLOAD_DIR") or "/Volumes/Datos/Descargas").expanduser()
-TORRENT_DROP_DIR = Path(os.getenv("TORRENT_DROP_DIR") or str(Path.home() / "Downloads")).expanduser()
-TORRENT_UPLOAD_MAX_BYTES = int(os.getenv("TORRENT_UPLOAD_MAX_BYTES", str(10 * 1024 * 1024)))
-DASHBOARD_BIND = (os.getenv("DASHBOARD_BIND") or "127.0.0.1").strip()
-DASHBOARD_USER = (os.getenv("DASHBOARD_USER") or "").strip()
-DASHBOARD_PASSWORD = (os.getenv("DASHBOARD_PASSWORD") or "").strip()
 PRICE_BOT_DIR = Path(os.getenv("PRICE_BOT_DIR") or str(APP_DIR.parent / "ps5-price-bot")).expanduser()
 PRICE_BOT_DB = PRICE_BOT_DIR / "data" / "prices.sqlite3"
 PRICE_BOT_LOG = PRICE_BOT_DIR / "logs" / "bot.log"
@@ -71,14 +61,7 @@ HTML = r'''<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#07111f">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Emby Dashboard">
-<meta name="mobile-web-app-capable" content="yes">
-<link rel="manifest" href="/manifest.webmanifest">
-<link rel="apple-touch-icon" href="/app-icon.png">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Emby Automation · Dashboard</title>
 <style>
 :root{
@@ -380,11 +363,6 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .download-form input:focus{border-color:rgba(110,168,255,.55);box-shadow:0 0 0 3px rgba(110,168,255,.10)}
 .download-form button{height:44px;border:0;border-radius:12px;padding:0 16px;background:linear-gradient(135deg,var(--accent),var(--accent-2));color:white;font:inherit;font-weight:800;cursor:pointer}
 .download-form__status{padding:0 18px 12px;font-size:12px;color:var(--muted);min-height:18px}
-.torrent-form{display:flex;gap:10px;align-items:center;padding:16px 18px;border-bottom:1px solid rgba(255,255,255,.06);background:rgba(73,214,255,.025)}
-.torrent-form input[type=file]{flex:1;min-width:0;color:var(--muted);font:inherit}
-.torrent-form input[type=file]::file-selector-button{margin-right:12px;height:40px;border:1px solid var(--border);border-radius:11px;padding:0 14px;background:rgba(255,255,255,.06);color:var(--text);font:inherit;font-weight:700;cursor:pointer}
-.torrent-form button{height:44px;border:0;border-radius:12px;padding:0 16px;background:linear-gradient(135deg,var(--cyan),var(--accent));color:#04101d;font:inherit;font-weight:850;cursor:pointer}
-.torrent-form__status{padding:0 18px 12px;font-size:12px;color:var(--muted);min-height:18px}
 .system-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin-bottom:18px}
 .system-card{padding:16px;border-radius:var(--radius);border:1px solid var(--border);background:var(--panel);box-shadow:var(--shadow)}
 .system-card__label{color:var(--muted);font-size:12px}
@@ -404,7 +382,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .host-storage .storage-chip{margin:0}
 .host-note{padding:0 16px 16px;color:var(--muted);font-size:11px;line-height:1.45}
 @media (max-width:1220px){.system-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.host-layout{grid-template-columns:1fr}}
-@media (max-width:720px){.download-form,.torrent-form{flex-direction:column;align-items:stretch}.system-grid{grid-template-columns:1fr}}
+@media (max-width:720px){.download-form{flex-direction:column;align-items:stretch}.system-grid{grid-template-columns:1fr}}
 @media (max-width:1220px){
   .services,.metrics,.stats-grid,.deal-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .layout,.logs{grid-template-columns:1fr}
@@ -425,92 +403,6 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
     content:attr(data-label);color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em;
   }
 }
-
-/* Responsive v3 · tablet + iPhone */
-@media (max-width:1024px){
-  body{background-attachment:fixed}
-  .app{width:min(100% - 24px, 980px);margin:18px auto 34px}
-  .hero{padding:22px;border-radius:24px;gap:16px}
-  .hero h1{font-size:34px}
-  .hero__side{min-width:0;width:100%}
-  .controls{display:grid;grid-template-columns:1fr 1fr;justify-content:stretch}
-  .github-link,.select-wrap,.button{width:100%;justify-content:center}
-  .github-link{grid-column:1/-1}
-  .tabs{max-width:100%;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
-  .tabs::-webkit-scrollbar{display:none}
-  .tab{flex:1 0 auto;min-height:44px;white-space:nowrap}
-  .services{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .metrics,.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .host-layout,.layout,.logs{grid-template-columns:1fr}
-  .host-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
-  .host-metric[style*="grid-column"]{grid-column:auto!important}
-  .deal-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .panel,.host-panel,.service-card,.metric-card,.system-card{min-width:0}
-  .panel__body{overflow-x:auto;-webkit-overflow-scrolling:touch}
-  .log-panel pre{max-height:36vh}
-}
-
-@media (max-width:600px){
-  html{background:#050b16}
-  body{padding:0;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);overflow-x:hidden}
-  body::before{background-size:22px 22px}
-  .app{width:100%;margin:0;padding:10px max(10px,env(safe-area-inset-right)) 24px max(10px,env(safe-area-inset-left))}
-  .hero{padding:17px;margin-bottom:12px;border-radius:20px}
-  .eyebrow{font-size:10px;padding:7px 10px}
-  .hero h1{font-size:27px;line-height:1.08;margin:12px 0 7px}
-  .hero p{font-size:13px;line-height:1.5}
-  .status-badge{padding:12px 13px;border-radius:15px;align-items:flex-start;flex-direction:column}
-  .status-badge #updated{min-width:0;text-align:left;white-space:normal;font-size:12px}
-  .controls{grid-template-columns:1fr;gap:8px}
-  .github-link{grid-column:auto}
-  .github-link,.select-wrap,.button{min-height:46px;border-radius:14px}
-  .tabs{position:sticky;top:max(8px,env(safe-area-inset-top));z-index:20;margin-bottom:12px;padding:5px;border-radius:14px;background:rgba(7,17,31,.93);box-shadow:0 10px 30px rgba(0,0,0,.34)}
-  .tab{padding:9px 12px;font-size:13px}
-  .services,.metrics,.stats-grid,.deal-grid,.system-grid{grid-template-columns:1fr}
-  .host-metrics{grid-template-columns:repeat(2,minmax(0,1fr));padding:12px;gap:9px}
-  .host-metric{padding:12px;border-radius:14px}
-  .host-metric[style*="grid-column"]{grid-column:1/-1!important}
-  .host-metric__value{font-size:19px}
-  .host-panel__head,.panel__head{padding:14px 15px}
-  .host-storage{padding:12px}
-  .host-note{padding:0 12px 12px}
-  .service-card,.metric-card,.system-card{padding:15px;border-radius:17px}
-  .metric-card__value,.stat-big{font-size:29px}
-  .panel,.host-panel{border-radius:18px}
-  .section-title{align-items:flex-start;flex-direction:column;gap:3px;font-size:15px}
-  .section-title small{line-height:1.35}
-  .panel__body.pad{padding:14px}
-  .storage-chip{padding:14px;border-radius:15px}
-  .download-form,.torrent-form{padding:13px;gap:9px}
-  .download-form input,.download-form button,.torrent-form button{width:100%;min-height:46px}
-  .torrent-form input[type=file]{width:100%;padding:6px 0}
-  .torrent-form input[type=file]::file-selector-button{max-width:100%;margin:0 8px 6px 0}
-  .download-form__status,.torrent-form__status{padding:0 13px 11px;line-height:1.45}
-  .deal-card{min-height:0;padding:15px}
-  .deal-card__price{font-size:25px}
-  .progress{min-width:0;width:100%}
-  .progress-label{white-space:normal;line-height:1.45}
-  thead{display:none}
-  table,tbody,tr,td{display:block;width:100%}
-  table{font-size:13px}
-  tbody{padding:8px}
-  tbody tr{padding:8px 0;margin:0 0 8px;border:1px solid rgba(255,255,255,.06);border-radius:14px;background:rgba(255,255,255,.025);overflow:hidden}
-  tbody td{display:grid;grid-template-columns:minmax(92px,.42fr) minmax(0,1fr);align-items:start;gap:10px;padding:8px 11px;border-bottom:1px solid rgba(255,255,255,.04);overflow-wrap:anywhere}
-  tbody td:last-child{border-bottom:0}
-  tbody td::before{content:attr(data-label);color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em;font-weight:700}
-  .logs{gap:12px}
-  .log-panel pre{min-height:180px;max-height:38vh;padding:14px;font-size:11px;line-height:1.5}
-  .empty{padding:20px 14px}
-}
-
-@media (max-width:390px){
-  .app{padding-left:8px;padding-right:8px}
-  .hero{padding:15px}
-  .hero h1{font-size:24px}
-  .host-metrics{grid-template-columns:1fr}
-  .host-metric[style*="grid-column"]{grid-column:auto!important}
-  tbody td{grid-template-columns:1fr;gap:4px}
-}
 </style>
 </head>
 <body>
@@ -519,7 +411,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
     <div class="hero__main">
       <div class="eyebrow">Emby Automation · Dashboard</div>
       <h1>Control total, limpio y moderno</h1>
-      <p>Estado de servicios, descargas, historial y logs en tiempo real, optimizado para Mac, iPad y iPhone.</p>
+      <p>Estado de servicios, descargas, historial y logs en tiempo real, con una interfaz más actual y cómoda para usar desde el Mac.</p>
     </div>
     <div class="hero__side">
       <div class="status-badge">
@@ -634,24 +526,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
       <div class="host-panel__head">
         <div>
           <div class="host-panel__title">🗄️ Servidor Emby</div>
-          <div class="host-panel__sub">Sistema Linux remoto · métricas vía SSH</div>
-        </div>
-      </div>
-      <div class="host-metrics">
-        <div class="host-metric">
-          <div class="host-metric__label">CPU</div>
-          <div class="host-metric__value" id="embyCpu">—</div>
-          <div class="host-metric__hint">Uso total del servidor</div>
-        </div>
-        <div class="host-metric">
-          <div class="host-metric__label">RAM</div>
-          <div class="host-metric__value" id="embyRam">—</div>
-          <div class="host-metric__hint" id="embyRamHint">Memoria del servidor</div>
-        </div>
-        <div class="host-metric" style="grid-column:1/-1">
-          <div class="host-metric__label">Carga</div>
-          <div class="host-metric__value" id="embyLoad">—</div>
-          <div class="host-metric__hint" id="embySystemHint">1 · 5 · 15 minutos</div>
+          <div class="host-panel__sub">Almacenamiento remoto</div>
         </div>
       </div>
       <div class="host-storage" id="serverStorage"></div>
@@ -668,11 +543,6 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
         <button type="submit">Descargar</button>
       </form>
       <div class="download-form__status" id="downloadFormStatus"></div>
-      <form class="torrent-form" id="torrentForm">
-        <input id="torrentFile" type="file" accept=".torrent,application/x-bittorrent" required>
-        <button type="submit">Añadir torrent</button>
-      </form>
-      <div class="torrent-form__status" id="torrentFormStatus">Se guardará en la misma carpeta que los torrents recibidos por Telegram.</div>
       <div class="panel__body" id="downloads"></div>
     </section>
 
@@ -925,12 +795,6 @@ async function loadDashboard(){
   document.getElementById('memoryNote').textContent=sys.memory_free_percent!=null
     ? `macOS utiliza RAM libre como caché. Que el porcentaje ocupado sea alto no implica por sí solo falta de memoria; fíjate también en memory_pressure y en el uso de swap.`
     : `macOS utiliza RAM libre como caché, por lo que un porcentaje ocupado alto no implica necesariamente falta de memoria.`;
-  const embySystem=d.emby_system||{};
-  document.getElementById('embyCpu').textContent=embySystem.cpu_percent!=null?`${Number(embySystem.cpu_percent).toFixed(1)}%`:'—';
-  document.getElementById('embyRam').textContent=embySystem.ram_percent!=null?`${Number(embySystem.ram_percent).toFixed(1)}%`:'—';
-  document.getElementById('embyRamHint').textContent=embySystem.ram_used!=null?`${size(embySystem.ram_used)} de ${size(embySystem.ram_total)}`:(embySystem.error||'Sin lectura');
-  document.getElementById('embyLoad').textContent=embySystem.load_1!=null?`${Number(embySystem.load_1).toFixed(2)} · ${Number(embySystem.load_5).toFixed(2)} · ${Number(embySystem.load_15).toFixed(2)}`:'—';
-  document.getElementById('embySystemHint').textContent=embySystem.updated_at?`${embySystem.stale?'Último dato válido':'Última lectura'} · ${new Date(embySystem.updated_at).toLocaleString('es-ES')}`:(embySystem.error||'1 · 5 · 15 minutos');
   const emby=d.emby_disk||{};
   let embyHtml='';
   if(emby.available){
@@ -1062,30 +926,6 @@ downloadForm.addEventListener('submit',async e=>{
     setTimeout(loadDashboard,1200);
   }catch(err){
     status.textContent='Error: '+err.message;
-  }
-});
-
-const torrentForm=document.getElementById('torrentForm');
-torrentForm.addEventListener('submit',async e=>{
-  e.preventDefault();
-  const input=document.getElementById('torrentFile');
-  const status=document.getElementById('torrentFormStatus');
-  const file=input.files&&input.files[0];
-  if(!file){status.textContent='Selecciona un archivo .torrent.';return;}
-  status.textContent='Subiendo torrent…';
-  try{
-    const r=await fetch('/api/torrent',{
-      method:'POST',
-      headers:{'Content-Type':'application/x-bittorrent','X-Torrent-Filename':encodeURIComponent(file.name)},
-      body:file
-    });
-    const d=await r.json();
-    if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);
-    status.textContent=`✅ Torrent añadido: ${d.name}`;
-    input.value='';
-    setTimeout(loadDashboard,800);
-  }catch(err){
-    status.textContent='❌ '+(err.message||err);
   }
 });
 
@@ -1512,48 +1352,7 @@ def disk_info(path: Path) -> dict:
         return {"path": str(path), "exists": False, "total": 0, "used": 0, "free": 0}
 
 
-PWA_MANIFEST = json.dumps({
-    "name": "Emby Automation Dashboard",
-    "short_name": "Emby",
-    "start_url": "/",
-    "scope": "/",
-    "display": "standalone",
-    "background_color": "#07111f",
-    "theme_color": "#07111f",
-    "description": "Dashboard privado de Emby Automation",
-    "icons": [
-        {"src": "/app-icon.png", "sizes": "180x180", "type": "image/png"},
-        {"src": "/app-icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
-    ]
-}, ensure_ascii=False)
-
 class Handler(BaseHTTPRequestHandler):
-    def _authorized(self) -> bool:
-        if not DASHBOARD_USER and not DASHBOARD_PASSWORD:
-            return True
-        raw = self.headers.get("Authorization", "")
-        if not raw.startswith("Basic "):
-            return False
-        try:
-            decoded = base64.b64decode(raw[6:], validate=True).decode("utf-8")
-            user, password = decoded.split(":", 1)
-        except Exception:
-            return False
-        return hmac.compare_digest(user, DASHBOARD_USER) and hmac.compare_digest(password, DASHBOARD_PASSWORD)
-
-    def _require_auth(self) -> bool:
-        if self._authorized():
-            return True
-        body = b"Authentication required"
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="Emby Dashboard", charset="UTF-8"')
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-        return False
-
     def send_bytes(self, body: bytes, content_type: str, status: int = 200):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -1563,21 +1362,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if not self._require_auth():
-            return
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self.send_bytes(HTML.encode("utf-8"), "text/html; charset=utf-8")
-            return
-        if parsed.path == "/manifest.webmanifest":
-            self.send_bytes(PWA_MANIFEST.encode("utf-8"), "application/manifest+json; charset=utf-8")
-            return
-        if parsed.path == "/app-icon.png":
-            icon_path = APP_DIR / "static" / "app-icon.png"
-            if icon_path.is_file():
-                self.send_bytes(icon_path.read_bytes(), "image/png")
-            else:
-                self.send_error(404)
             return
         if parsed.path == "/health":
             self.send_bytes(b"ok", "text/plain")
@@ -1612,7 +1399,6 @@ class Handler(BaseHTTPRequestHandler):
                 "disk": disk_info(GAME_DOWNLOAD_DIR),
                 "internal_disk": disk_info(Path("/")),
                 "emby_disk": emby_storage_snapshot(),
-                "emby_system": emby_system_snapshot(),
                 "system": mac_system_snapshot(),
             }
             self.send_bytes(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
@@ -1620,90 +1406,43 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):
-        if not self._require_auth():
-            return
         parsed = urlparse(self.path)
-
-        if parsed.path == "/api/torrent":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-            except ValueError:
-                length = 0
-            if length <= 0 or length > TORRENT_UPLOAD_MAX_BYTES:
-                self.send_bytes(
-                    json.dumps({"error": f"Torrent vacío o demasiado grande; máximo {TORRENT_UPLOAD_MAX_BYTES // (1024*1024)} MB"}, ensure_ascii=False).encode("utf-8"),
-                    "application/json; charset=utf-8", 413 if length > TORRENT_UPLOAD_MAX_BYTES else 400,
-                )
-                return
-            filename = unquote(self.headers.get("X-Torrent-Filename", "")).strip()
-            if not filename.lower().endswith(".torrent"):
-                self.send_bytes(
-                    json.dumps({"error": "Selecciona un archivo con extensión .torrent"}, ensure_ascii=False).encode("utf-8"),
-                    "application/json; charset=utf-8", 400,
-                )
-                return
-            try:
-                data = self.rfile.read(length)
-                target = save_torrent_bytes(data, filename, TORRENT_DROP_DIR, prefix="dashboard")
-                add_history(
-                    "torrent", "success", title=target.name, source_path="dashboard",
-                    destination=str(target.parent), details="Torrent añadido desde el Dashboard", size_bytes=len(data),
-                )
-            except ValueError as exc:
-                self.send_bytes(
-                    json.dumps({"error": str(exc)}, ensure_ascii=False).encode("utf-8"),
-                    "application/json; charset=utf-8", 400,
-                )
-                return
-            except OSError as exc:
-                self.send_bytes(
-                    json.dumps({"error": f"No se pudo guardar el torrent: {exc}"}, ensure_ascii=False).encode("utf-8"),
-                    "application/json; charset=utf-8", 500,
-                )
-                return
+        if parsed.path != "/api/download":
+            self.send_error(404)
+            return
+        if not TELEGRAM_CHAT_ID:
             self.send_bytes(
-                json.dumps({"ok": True, "name": target.name}, ensure_ascii=False).encode("utf-8"),
-                "application/json; charset=utf-8", 201,
+                json.dumps({"error": "TELEGRAM_CHAT_ID no configurado"}, ensure_ascii=False).encode("utf-8"),
+                "application/json; charset=utf-8", 503,
             )
             return
-
-        if parsed.path == "/api/download":
-            if not TELEGRAM_CHAT_ID:
-                self.send_bytes(
-                    json.dumps({"error": "TELEGRAM_CHAT_ID no configurado"}, ensure_ascii=False).encode("utf-8"),
-                    "application/json; charset=utf-8", 503,
-                )
-                return
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-            except ValueError:
-                length = 0
-            if length <= 0 or length > 65536:
-                self.send_bytes(
-                    json.dumps({"error": "Petición inválida"}, ensure_ascii=False).encode("utf-8"),
-                    "application/json; charset=utf-8", 400,
-                )
-                return
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                url = str(payload.get("url") or "").strip()
-            except Exception:
-                url = ""
-            parsed_url = urlparse(url)
-            if len(url) > 8192 or parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
-                self.send_bytes(
-                    json.dumps({"error": "URL no válida"}, ensure_ascii=False).encode("utf-8"),
-                    "application/json; charset=utf-8", 400,
-                )
-                return
-            request_id = queue_download_request(chat_id=TELEGRAM_CHAT_ID, url=url)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 65536:
             self.send_bytes(
-                json.dumps({"ok": True, "request_id": request_id}, ensure_ascii=False).encode("utf-8"),
-                "application/json; charset=utf-8", 202,
+                json.dumps({"error": "Petición inválida"}, ensure_ascii=False).encode("utf-8"),
+                "application/json; charset=utf-8", 400,
             )
             return
-
-        self.send_error(404)
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            url = str(payload.get("url") or "").strip()
+        except Exception:
+            url = ""
+        parsed_url = urlparse(url)
+        if len(url) > 8192 or parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+            self.send_bytes(
+                json.dumps({"error": "URL no válida"}, ensure_ascii=False).encode("utf-8"),
+                "application/json; charset=utf-8", 400,
+            )
+            return
+        request_id = queue_download_request(chat_id=TELEGRAM_CHAT_ID, url=url)
+        self.send_bytes(
+            json.dumps({"ok": True, "request_id": request_id}, ensure_ascii=False).encode("utf-8"),
+            "application/json; charset=utf-8", 202,
+        )
 
     def log_message(self, fmt, *args):
         pass
@@ -1711,17 +1450,11 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default=DASHBOARD_BIND)
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
-    host = str(args.host or "127.0.0.1").strip()
-    if host not in ("127.0.0.1", "localhost", "::1") and (not DASHBOARD_USER or not DASHBOARD_PASSWORD):
-        raise SystemExit("Para exponer el Dashboard fuera de localhost configura DASHBOARD_USER y DASHBOARD_PASSWORD en .env")
     init_db()
-    TORRENT_DROP_DIR.mkdir(parents=True, exist_ok=True)
-    server = ThreadingHTTPServer((host, args.port), Handler)
-    shown_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
-    print(f"Dashboard: http://{shown_host}:{args.port} (bind {host})", flush=True)
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    print(f"Dashboard: http://127.0.0.1:{args.port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

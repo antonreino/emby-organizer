@@ -210,56 +210,6 @@ def emby_storage_snapshot() -> dict[str, Any]:
     return current
 
 
-
-def save_emby_system(*, cpu_percent: float, ram_total: int, ram_used: int, ram_available: int, load_1: float, load_5: float, load_15: float) -> None:
-    set_runtime_state(
-        "emby_system",
-        {
-            "available": True,
-            "cpu_percent": round(float(cpu_percent), 1),
-            "ram_total": int(ram_total),
-            "ram_used": int(ram_used),
-            "ram_available": int(ram_available),
-            "ram_percent": round((int(ram_used) * 100 / int(ram_total)), 1) if ram_total else 0.0,
-            "load_1": round(float(load_1), 2),
-            "load_5": round(float(load_5), 2),
-            "load_15": round(float(load_15), 2),
-            "updated_at": utc_now(),
-            "stale": False,
-        },
-    )
-
-
-def mark_emby_system_error(error: str) -> None:
-    current = get_runtime_state("emby_system") or {
-        "available": False,
-        "cpu_percent": None,
-        "ram_total": 0,
-        "ram_used": 0,
-        "ram_available": 0,
-        "ram_percent": None,
-        "load_1": None,
-        "load_5": None,
-        "load_15": None,
-    }
-    current["last_error"] = str(error)
-    current["last_error_at"] = utc_now()
-    current["stale"] = bool(current.get("available"))
-    set_runtime_state("emby_system", current)
-
-
-def emby_system_snapshot() -> dict[str, Any]:
-    current = get_runtime_state("emby_system")
-    if current is None:
-        return {
-            "available": False,
-            "error": "Todavía no hay una lectura de CPU/RAM del servidor Emby",
-            "stale": False,
-        }
-    if not current.get("available"):
-        current["error"] = current.get("last_error") or "Sin información de CPU/RAM"
-    return current
-
 def add_history(
     kind: str,
     status: str,

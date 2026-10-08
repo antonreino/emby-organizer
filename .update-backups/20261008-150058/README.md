@@ -282,16 +282,6 @@ El instalador:
 - configura las rutas reales del repositorio;
 - arranca los cuatro servicios.
 
-## Actualización sobre una instalación existente
-
-Este paquete incluye un actualizador que conserva `.env`, Git y los datos persistentes:
-
-```bash
-python3 scripts/update_macos.py "/Volumes/Datos/Proyectos/Scripts/emby-organizer"
-```
-
-Antes de reemplazar cada archivo crea una copia bajo `.update-backups/` y reinicia Organizer, Telegram y Dashboard.
-
 ## Servicios macOS
 
 Se instalan cuatro LaunchAgents:
@@ -342,7 +332,6 @@ El dashboard también muestra estos logs y permite seleccionar cuántas líneas 
 | `TMDB_API_KEY` | API de TMDb opcional |
 | `INBOX_DIR` | Carpeta vigilada por Organizer |
 | `TORRENT_DROP_DIR` | Destino de `.torrent` recibidos |
-| `TORRENT_UPLOAD_MAX_BYTES` | Tamaño máximo de un `.torrent` subido desde el Dashboard (10 MiB por defecto) |
 | `GAME_DOWNLOAD_DIR` | Destino de `/juego` |
 | `PRICE_BOT_DIR` | Ruta opcional a `ps5-price-bot`; por defecto `../ps5-price-bot` |
 | `GAME_MAX_CONCURRENT` | Número máximo de descargas simultáneas |
@@ -352,12 +341,8 @@ El dashboard también muestra estos logs y permite seleccionar cuántas líneas 
 | `LOG_ALERT_POLL_SECONDS` | Intervalo del watcher de errores |
 | `LOG_ALERT_DEDUP_SECONDS` | Ventana de deduplicación |
 | `LOG_ALERT_MAX_CHARS` | Tamaño máximo de alertas |
-| `DASHBOARD_BIND` | Dirección de escucha del Dashboard (`127.0.0.1` por defecto; `0.0.0.0` para proxy remoto) |
-| `DASHBOARD_USER` | Usuario HTTP del Dashboard cuando se publica fuera de localhost |
-| `DASHBOARD_PASSWORD` | Contraseña HTTP del Dashboard cuando se publica fuera de localhost |
 | `EMBY_STATE_DB` | Ruta opcional de SQLite |
 | `EMBY_STORAGE_REFRESH_SECONDS` | Intervalo de actualización del almacenamiento Emby |
-| `EMBY_SYSTEM_REFRESH_SECONDS` | Intervalo de actualización de CPU/RAM del servidor Emby (60 s por defecto) |
 | `EMBY_SFTP_ANIME_URL` | Biblioteca Anime por SFTP |
 | `EMBY_SFTP_SERIES_URL` | Biblioteca Series por SFTP |
 | `EMBY_SFTP_MOVIES_URL` | Biblioteca Películas por SFTP |
@@ -367,20 +352,6 @@ El dashboard también muestra estos logs y permite seleccionar cuántas líneas 
 | `EMBY_WATCH_DIR` | Directorio vigilado en el servidor |
 
 Consulta `.env.example` para ver todos los valores disponibles.
-
-## Acceso remoto al Dashboard
-
-Por seguridad el Dashboard escucha solo en `127.0.0.1` por defecto. Para publicarlo mediante un proxy inverso como Nginx Proxy Manager:
-
-```dotenv
-DASHBOARD_BIND=0.0.0.0
-DASHBOARD_USER=tu_usuario
-DASHBOARD_PASSWORD=una_contraseña_larga_y_única
-```
-
-Después reinicia `com.tone.emby-log-viewer`. Si `DASHBOARD_BIND` no es local y faltan las credenciales, el Dashboard se niega a arrancar. Publica el puerto `8765` únicamente a través de HTTPS y del proxy inverso; no abras el puerto 8765 directamente en el router.
-
-En Nginx Proxy Manager, apunta el host al IP LAN del Mac mini, puerto `8765`, esquema `http`, activa Websockets si lo deseas y configura SSL con certificado válido. La autenticación propia del Dashboard sigue protegiendo todas las rutas y APIs.
 
 ## Seguridad
 
@@ -485,10 +456,3 @@ http://127.0.0.1:8765
 ## Licencia
 
 Consulta `LICENSE`.
-
-
-## Dashboard móvil y app web
-
-El Dashboard incluye un diseño responsive específico para escritorio, tablet y móvil. En iPhone/iPad utiliza `viewport-fit=cover`, respeta las áreas seguras, reorganiza métricas y formularios y transforma las tablas en tarjetas para pantallas estrechas.
-
-También incluye un Web App Manifest e icono para instalar `https://dashboard.tonecas.ovh` como app web desde Safari mediante **Compartir → Añadir a pantalla de inicio → Abrir como app web**. La autenticación HTTP del Dashboard sigue siendo obligatoria cuando se publica fuera de localhost.
